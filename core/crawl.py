@@ -10,6 +10,8 @@ import re
 import time
 import heapq
 import itertools
+import os
+import tempfile
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 import html
 from urllib.parse import urljoin, urlparse, unquote
@@ -17,8 +19,8 @@ from datetime import datetime, timezone
 
 import requests
 
-from core import index_detect
-from core.profiles import update_profile
+from core import hosted_oder, index_detect, oder_package
+from core.profiles import get_profile, update_profile
 from core import cache
 from core import crawl_state
 from core.settings import load_settings
@@ -325,7 +327,8 @@ def _save_history(profile, stats, started_iso):
         "removed_count": int(changes.get("removed_count", 0)),
         "changed_count": int(changes.get("changed_count", 0)),
     }
-    history = list(profile.get("crawl_history") or [])
+    latest_profile = get_profile(profile["id"]) or profile
+    history = list(latest_profile.get("crawl_history") or [])
     history.insert(0, entry)
     update_profile(profile["id"], last_crawled=finished_iso,
                    folders_cached=int(stats.get("folders_discovered", stats.get("crawled", 0))),
@@ -349,18 +352,8 @@ def crawl_profile(profile, progress_cb=None, log=print, stop_check=None, mode="r
     started_at = time.time()
     started_iso = datetime.now(timezone.utc).isoformat()
     mode = mode if mode in {"resume", "incremental", "full"} else "resume"
-    snapshot_id = cache.begin_snapshot(profile["id"], mode, base_url)
 
     global_settings = load_settings()
-    if mode == "full":
-        cache.mark_all_dirs_pending(profile["id"])
-    elif mode == "incremental":
-        cache.mark_stale_dirs_pending(
-            profile["id"], int(global_settings.get("incremental_stale_days", 7))
-        )
-    crawl_state.mark_started(
-        profile["id"], mode, started_iso, max(1, len(cache.pending_dirs(profile["id"]))), base_url
-    )
     workers = max(1, min(32, int(settings.get("crawl_concurrency", 8)), int(global_settings.get("network_max_connections", 12))))
     delay = max(0.0, float(settings.get("crawl_delay_seconds", 0.25)))
 
@@ -376,7 +369,118 @@ def crawl_profile(profile, progress_cb=None, log=print, stop_check=None, mode="r
           "files_discovered": files, "elapsed": 0.0,
           "rate": 0.0, "workers": workers})
 
+    # A hosted full .oder package is the cheapest and most reliable source.
+    # Check it before preparing a local snapshot so network activity starts
+    # immediately and an unchanged package can finish without touching nodes.
+    explicit_hosted_url = str(settings.get("hosted_oder_url") or "").strip()
+    previous_hosted = profile.get("hosted_index") if isinstance(profile.get("hosted_index"), dict) else None
+    auto_detect_indexes = bool(settings.get("auto_detect_index", True))
+    previous_request = dict(previous_hosted or {}) if auto_detect_indexes else {}
+    if totals["entries"] <= 1:
+        # Clearing a cache must force the package body to be downloaded again;
+        # a valid 304 alone cannot restore the removed local index.
+        previous_request.pop("etag", None)
+        previous_request.pop("last_modified", None)
+    if explicit_hosted_url or auto_detect_indexes:
+        hosted_snapshot_id = None
+        detect_session = make_session(settings)
+        try:
+            log("checking for a hosted .oder index before crawling…")
+            with tempfile.TemporaryDirectory(prefix="oder-hosted-") as temp_dir:
+                result = hosted_oder.fetch_hosted_index(
+                    detect_session,
+                    base_url,
+                    os.path.join(temp_dir, "hosted.oder"),
+                    os.path.join(temp_dir, "hosted-cache.sqlite3"),
+                    timeout=settings.get("request_timeout_seconds", 20),
+                    explicit_url=explicit_hosted_url or None,
+                    previous=previous_request or None,
+                    auto_detect=auto_detect_indexes,
+                    stop_check=stop_check,
+                    progress_cb=emit,
+                    log=log,
+                )
+                if result is not None:
+                    if result.status == "unchanged":
+                        counts = cache.count_summary(profile["id"])
+                        changes = {"new_count": 0, "removed_count": 0, "changed_count": 0}
+                        log(f"hosted .oder has not changed: {result.source}")
+                    else:
+                        emit({"phase": "hosted_apply", "current": result.source})
+                        hosted_snapshot_id = cache.begin_snapshot(profile["id"], "hosted", base_url)
+                        counts = oder_package.apply_hosted_cache(
+                            profile["id"], result.info, result.cache_path, base_url
+                        )
+                        changes = cache.finish_snapshot(
+                            profile["id"], hosted_snapshot_id, "completed"
+                        )
+                        hosted_snapshot_id = None
+                        log(
+                            f"loaded hosted .oder: {result.source} — "
+                            f"{counts['folders']:,} folders, {counts['files']:,} files"
+                        )
+                    record = dict(previous_hosted or {})
+                    record.update(result.source_record())
+                    record["base_url"] = base_url
+                    update_profile(profile["id"], hosted_index=record)
+                    elapsed = max(0.001, time.time() - started_at)
+                    stats = {
+                        "done": True, "running": False, "crawled": 0,
+                        "current": None, "queued": 0, "requests": result.requests,
+                        "folders_discovered": counts["folders"],
+                        "files_discovered": counts["files"],
+                        "elapsed": elapsed, "rate": 0.0, "workers": 1,
+                        "mode": "hosted", "requested_mode": mode,
+                        "hosted_source": result.source,
+                        "hosted_status": result.status, "changes": changes,
+                    }
+                    crawl_state.mark_completed(profile["id"], counts["folders"])
+                    _save_history(profile, stats, started_iso)
+                    emit(stats)
+                    return True
+        except hosted_oder.HostedIndexStopped:
+            counts = cache.count_summary(profile["id"])
+            elapsed = max(0.001, time.time() - started_at)
+            stats = {
+                "done": False, "running": False, "stopped": True,
+                "crawled": 0, "current": None,
+                "queued": len(cache.pending_dirs(profile["id"])), "requests": 0,
+                "folders_discovered": counts["folders"],
+                "files_discovered": counts["files"], "elapsed": elapsed,
+                "rate": 0.0, "workers": 1, "mode": "hosted",
+                "changes": {"new_count": 0, "removed_count": 0, "changed_count": 0},
+            }
+            crawl_state.mark_resumable(profile["id"], stats["queued"], 0, "stopped by user")
+            _save_history(profile, stats, started_iso)
+            emit(stats)
+            return False
+        except Exception as exc:
+            if hosted_snapshot_id is not None:
+                try:
+                    cache.finish_snapshot(profile["id"], hosted_snapshot_id, "partial")
+                except Exception:
+                    pass
+            log(f"hosted .oder could not be applied; falling back to directory crawling: {exc}")
+        finally:
+            detect_session.close()
+
+    snapshot_id = cache.begin_snapshot(profile["id"], mode, base_url)
+    if mode == "full":
+        cache.mark_all_dirs_pending(profile["id"])
+    elif mode == "incremental":
+        cache.mark_stale_dirs_pending(
+            profile["id"], int(global_settings.get("incremental_stale_days", 7))
+        )
+    crawl_state.mark_started(
+        profile["id"], mode, started_iso, max(1, len(cache.pending_dirs(profile["id"]))), base_url
+    )
+
     index_source = profile.get("index_source")
+    if index_source and index_source.get("mode") == "full_tree" and not index_source.get("nodes"):
+        # Recursive JSON/sitemap contents are deliberately not persisted in
+        # profiles. Re-detect them instead of treating an empty remembered
+        # descriptor as a real tree on the next update.
+        index_source = None
     if index_source is None and settings.get("auto_detect_index", True):
         try:
             log("checking for an existing index/listing before crawling…")
@@ -384,11 +488,19 @@ def crawl_profile(profile, progress_cb=None, log=print, stop_check=None, mode="r
             detected = index_detect.detect_index(detect_session, base_url,
                                                   timeout=settings.get("request_timeout_seconds", 20))
             index_source = detected if detected else {"mode": "html"}
-            persisted_source = {k: v for k, v in index_source.items() if k != "nodes"}
+            persisted_source = (
+                None if index_source.get("mode") == "full_tree"
+                else {k: v for k, v in index_source.items() if k != "nodes"}
+            )
             update_profile(profile["id"], index_source=persisted_source)
             log(f"  using mode: {index_source['mode']}"
                 + (f" (from {index_source.get('source')})" if index_source.get("source") else ""))
+            detect_session.close()
         except Exception as exc:
+            try:
+                detect_session.close()
+            except Exception:
+                pass
             pending_after = max(1, len(cache.pending_dirs(profile["id"])))
             elapsed = max(0.001, time.time() - started_at)
             stats = {"done": False, "error": str(exc), "crawled": 0, "current": None,

@@ -18,6 +18,7 @@ DEFAULT_SETTINGS = {
     "request_timeout_seconds": 20,
     "user_agent": "Mozilla/5.0 (offline-directory-browser)",
     "auto_detect_index": True,
+    "hosted_oder_url": "",
 }
 
 
@@ -56,6 +57,7 @@ def create_profile(name, base_url):
         "base_url": base_url,
         "settings": dict(DEFAULT_SETTINGS),
         "index_source": None,
+        "hosted_index": None,
         "last_crawled": None,
         "folders_cached": 0,
         "last_crawl_stats": None,

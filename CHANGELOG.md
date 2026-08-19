@@ -4,6 +4,18 @@ Notable changes to ODeR are recorded here.
 
 ## Unreleased
 
+## 0.18.0 — 2026-08-19
+
+- Added automatic discovery and loading of full `.oder` indexes hosted by a directory or CDN, allowing complete indexes to replace folder-by-folder crawling.
+- Added conventional `index.oder`, `directory.oder`, and `.well-known/oder.oder` discovery beneath each directory base URL.
+- Added HTML and HTTP `Link` advertisement support using `rel="oder-index"` and the `application/vnd.oder+zip` media type.
+- Added an optional exact hosted-package URL to Add/Edit Site for packages stored outside the directory root.
+- Added streamed downloads, visible Activity progress, cancellation, package size limits, complete `.oder` validation, and exact base-URL matching before a hosted cache is applied.
+- Added `ETag` and `Last-Modified` conditional requests so unchanged hosted indexes skip both downloading and crawling.
+- Preserved local site settings and crawl history while applying hosted cache contents, with normal index detection and crawling retained as fallback paths.
+- Fixed remembered recursive JSON/sitemap descriptors so later updates re-detect their contents instead of treating an intentionally unpersisted tree as empty.
+- Added hosting documentation and regression coverage for advertisements, conventional paths, validation, change tracking, unchanged packages, and fallback behavior.
+
 ## 0.17.0 — 2026-08-19
 
 - Moved cache initialization and Home statistics into a background task so the window and site cards appear immediately.

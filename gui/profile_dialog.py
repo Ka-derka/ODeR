@@ -10,7 +10,7 @@ class ProfileDialog(QDialog):
     def __init__(self, parent=None, profile=None):
         super().__init__(parent)
         self.setWindowTitle("Edit Site" if profile else "Add Site")
-        self.setMinimumWidth(420)
+        self.setMinimumWidth(520)
         self._profile = profile
 
         settings = (profile or {}).get("settings", {})
@@ -19,8 +19,19 @@ class ProfileDialog(QDialog):
         self.url_edit = QLineEdit((profile or {}).get("base_url", ""))
         self.url_edit.setPlaceholderText("https://example.com/files/")
 
-        self.auto_detect = QCheckBox("Auto-detect existing index before crawling")
+        self.auto_detect = QCheckBox("Auto-detect hosted .oder and other indexes before crawling")
         self.auto_detect.setChecked(settings.get("auto_detect_index", True))
+
+        self.hosted_oder_url = QLineEdit(str(settings.get("hosted_oder_url") or ""))
+        self.hosted_oder_url.setPlaceholderText("Optional: https://cdn.example.com/archive/index.oder")
+        self.hosted_oder_url.setToolTip(
+            "Exact URL of a full .oder package. Leave blank to discover index.oder or an advertised package."
+        )
+        hosted_help = QLabel(
+            "Leave blank for automatic root/HTML discovery. Only validated full packages matching this Base URL are loaded."
+        )
+        hosted_help.setObjectName("mutedLabel")
+        hosted_help.setWordWrap(True)
 
         self.crawl_delay = QDoubleSpinBox()
         self.crawl_delay.setRange(0.0, 60.0)
@@ -57,6 +68,8 @@ class ProfileDialog(QDialog):
         form.addRow("Name", self.name_edit)
         form.addRow("Base URL", self.url_edit)
         form.addRow(self.auto_detect)
+        form.addRow("Hosted .oder URL", self.hosted_oder_url)
+        form.addRow(hosted_help)
         form.addRow(QLabel("<b>Crawl settings</b>"))
         form.addRow("Delay per worker request", self.crawl_delay)
         form.addRow("Concurrent folder requests", self.crawl_concurrency)
@@ -80,6 +93,7 @@ class ProfileDialog(QDialog):
             "base_url": self.url_edit.text().strip(),
             "settings": {
                 "auto_detect_index": self.auto_detect.isChecked(),
+                "hosted_oder_url": self.hosted_oder_url.text().strip(),
                 "crawl_delay_seconds": self.crawl_delay.value(),
                 "crawl_concurrency": self.crawl_concurrency.value(),
                 "crawl_retry_on_block_seconds": self.retry_backoff.value(),

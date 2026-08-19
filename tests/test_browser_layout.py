@@ -12,6 +12,7 @@ try:
     from gui.browser_widget import BrowserWidget
     from gui.queue_widget import QueueWidget
     from gui.main_window import ActivityPage, HomePage
+    from gui.profile_dialog import ProfileDialog
     PYSIDE_AVAILABLE = True
 except ModuleNotFoundError:
     PYSIDE_AVAILABLE = False
@@ -136,6 +137,22 @@ class BrowserLayoutTests(unittest.TestCase):
             self.assertIn("12", info.text())
             widget.close()
 
+    def test_activity_shows_hosted_package_download_progress(self):
+        profile = {"id": "site-1", "name": "Example", "base_url": "https://example.test/", "crawl_history": []}
+        status = {
+            "running": True, "phase": "hosted_download",
+            "current": "https://cdn.example.test/archive.oder",
+            "bytes_downloaded": 50, "bytes_total": 100,
+        }
+        with patch("gui.main_window.crawl_state.resumable", return_value=[]):
+            widget = ActivityPage()
+            widget.refresh([profile], {profile["id"]: status})
+            controls = widget._active_widgets[profile["id"]]
+            self.assertEqual(controls["bar"].value(), 50)
+            self.assertIn("hosted index", controls["info"].text())
+            self.assertIn("cdn.example.test", controls["info"].text())
+            widget.close()
+
     def test_download_refresh_reads_queue_once_for_multiple_groups(self):
         items = [
             {"id": "a", "group_id": "g1", "group_name": "One", "profile_name": "Site", "name": "a", "status": "done", "bytes_done": 1, "bytes_total": 1},
@@ -183,6 +200,23 @@ class BrowserLayoutTests(unittest.TestCase):
             )
             self.assertIn("10 items", widget._meta_labels[profile["id"]].text())
             widget.close()
+
+    def test_profile_dialog_preserves_exact_hosted_package_url(self):
+        profile = {
+            "name": "Example", "base_url": "https://example.test/",
+            "settings": {
+                "auto_detect_index": True,
+                "hosted_oder_url": "https://cdn.example.test/releases/latest.oder",
+            },
+        }
+        dialog = ProfileDialog(profile=profile)
+        result = dialog.result_data()
+        self.assertEqual(
+            result["settings"]["hosted_oder_url"],
+            "https://cdn.example.test/releases/latest.oder",
+        )
+        self.assertTrue(result["settings"]["auto_detect_index"])
+        dialog.close()
 
 
 if __name__ == "__main__":

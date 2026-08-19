@@ -337,7 +337,11 @@ class HomePage(QWidget):
         total_items = max(0, int(counts.get("entries", 0)) - 1)
         folders = int(counts.get("folders", 0))
         files = int(counts.get("files", 0))
-        status = "Cached ✓" if total_items > 0 else "No cache yet"
+        last_stats = profile.get("last_crawl_stats") or {}
+        if total_items > 0 and last_stats.get("update_mode") == "hosted":
+            status = "Hosted .oder ✓"
+        else:
+            status = "Cached ✓" if total_items > 0 else "No cache yet"
         return (
             f"{total_items:,} items  ·  {folders:,} folders  ·  {files:,} files  ·  "
             f"{status}  ·  {profile.get('last_crawled') or 'Not updated'}"
@@ -817,6 +821,32 @@ class ActivityPage(QWidget):
         widgets = self._active_widgets.get(profile["id"])
         if not widgets:
             return
+        phase = st.get("phase")
+        if phase in {"hosted_check", "hosted_download", "hosted_apply"}:
+            downloaded = int(st.get("bytes_downloaded", 0))
+            total = int(st.get("bytes_total", 0))
+            if phase == "hosted_download" and total > 0:
+                widgets["bar"].setRange(0, 100)
+                widgets["bar"].setValue(min(100, int(downloaded * 100 / total)))
+                widgets["bar"].setFormat(
+                    f"Downloading hosted index · {format_bytes(downloaded)} / {format_bytes(total)}"
+                )
+            else:
+                widgets["bar"].setRange(0, 0)
+                widgets["bar"].setFormat(
+                    "Checking for hosted index…" if phase == "hosted_check"
+                    else "Validating and loading hosted index…"
+                )
+            action = {
+                "hosted_check": "Checking for a directory-hosted .oder package",
+                "hosted_download": f"Downloading hosted index · {format_bytes(downloaded)} received",
+                "hosted_apply": "Validating package and replacing the cached index",
+            }[phase]
+            widgets["info"].setText(
+                f"<b>{action}</b><br>Normal folder crawling will be skipped when the package is valid.<br>"
+                f"Source: {st.get('current') or 'Discovering…'}"
+            )
+            return
         scanned = int(st.get("crawled", 0))
         discovered = max(scanned, int(st.get("folders_discovered", 0)))
         queued = max(0, int(st.get("queued", 0)))
@@ -824,6 +854,7 @@ class ActivityPage(QWidget):
         elapsed = float(st.get("elapsed", 0.0))
         coverage = int((scanned / discovered) * 100) if discovered else 0
         preparing = st.get("phase") == "preparing"
+        widgets["bar"].setRange(0, 100)
         widgets["bar"].setValue(coverage)
         widgets["bar"].setFormat("Preparing update…" if preparing else f"{coverage}% of discovered folders")
         remaining_eta = (queued / rate) if rate > 0 and queued > 0 else 0
@@ -2386,7 +2417,7 @@ class MainWindow(QMainWindow):
                 status = self._crawl_status.setdefault(profile_id, {})
                 status.update(progress)
                 status["running"] = not terminal
-                status["phase"] = "finished" if terminal else "running"
+                status["phase"] = "finished" if terminal else (progress.get("phase") or "running")
                 if terminal:
                     status["finalizing"] = True
                 status["last_update"] = time.time()
@@ -2539,9 +2570,11 @@ class MainWindow(QMainWindow):
                         continue
                     current_status["_consumed"] = True
                 browser = self._pages.get(f"site:{pid}")
-                if isinstance(browser, BrowserWidget):
-                    browser.refresh_cache()
                 profile = get_profile(pid) or self._crawl_profiles.get(pid)
+                if isinstance(browser, BrowserWidget):
+                    if profile is not None:
+                        browser.profile = profile
+                    browser.refresh_cache()
                 if profile is None:
                     continue
                 folders = int(st.get("folders_discovered", 0))

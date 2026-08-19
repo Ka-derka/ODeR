@@ -390,8 +390,10 @@ class BrowserWidget(QWidget):
         self.prev_page_btn.setEnabled(self.page_offset > 0)
         self.next_page_btn.setEnabled(last < total_children)
         suffix = f" · showing {first:,}–{last:,} of {total_children:,}" if total_children else ""
+        last_stats = self.profile.get("last_crawl_stats") or {}
+        cache_source = "Hosted .oder cache" if last_stats.get("update_mode") == "hosted" else "Offline cache"
         self.status_label.setText(
-            f"{shown:,} item{'s' if shown != 1 else ''}{suffix} · Offline cache · Select files and use Download selected"
+            f"{shown:,} item{'s' if shown != 1 else ''}{suffix} · {cache_source} · Select files and use Download selected"
         )
         self._update_selection_state()
 

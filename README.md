@@ -4,7 +4,7 @@
 
 ODeR is a PySide6 desktop application for indexing web directory listings, browsing the cached tree offline, tracking changes, and downloading selected files. Each directory keeps its own crawl and download settings, while the local SQLite index remains fast enough for large archives.
 
-Current version: **0.17.0**
+Current version: **0.18.0**
 
 ## Highlights
 
@@ -21,6 +21,7 @@ Current version: **0.17.0**
 - Check stable or preview GitHub releases in-app and download verified updates.
 - Keep one ODeR instance per Windows user and forward `.oder` files to the running window.
 - Keep browsing, Home, Activity, and Downloads responsive while large indexes are updated.
+- Discover and load a directory-hosted full `.oder` index instead of crawling every folder.
 
 ## Requirements
 
@@ -51,7 +52,7 @@ python -m compileall -q core gui main.py
 python -m unittest discover -s tests -v
 ```
 
-The repository includes tests for cache paging and search, snapshots, crawl recovery, concurrent WAL reads, stable live UI updates, grouped downloads, favorites, `.oder` validation, subtree exports, conflict handling, package comparison, update selection, and verified update downloads. A configurable 100,000-entry cache benchmark is available at `tools/benchmark_cache.py`.
+The repository includes tests for cache paging and search, snapshots, crawl recovery, concurrent WAL reads, stable live UI updates, grouped downloads, favorites, hosted `.oder` discovery and conditional refreshes, package validation, subtree exports, conflict handling, package comparison, update selection, and verified update downloads. A configurable 100,000-entry cache benchmark is available at `tools/benchmark_cache.py`.
 
 ## Build for Windows
 
@@ -89,6 +90,26 @@ cache.sqlite3       optional validated cached index
 ```
 
 Definition-only packages are small and must be indexed after import. Full packages include a consistent SQLite snapshot and can be browsed immediately. Imports validate the archive layout, manifest version, sizes, checksums, profile schema, URL, SQLite integrity, required tables, and cache counts before changing application data.
+
+## Hosted `.oder` indexes
+
+A directory can publish a full `.oder` package so ODeR can load one validated index instead of crawling every folder. ODeR checks an exact URL configured in **Edit Site**, advertised package links, and these paths beneath the directory base URL:
+
+```text
+index.oder
+directory.oder
+.well-known/oder.oder
+```
+
+To advertise a package stored anywhere else, add this to the directory HTML:
+
+```html
+<link rel="oder-index" type="application/vnd.oder+zip" href="https://cdn.example.com/archive/latest.oder">
+```
+
+Servers can alternatively send an HTTP `Link` response header with `rel="oder-index"`. ODeR streams the package to a temporary file and checks its ZIP layout, manifest, SHA-256 hashes, cache counts, SQLite integrity, and exact base URL before applying it. Definition-only and mismatched packages are ignored. Saved `ETag` and `Last-Modified` values allow future updates to finish with a conditional request when the hosted package has not changed.
+
+See [HOSTING.md](HOSTING.md) for publishing and server-configuration examples.
 
 ## Repository layout
 

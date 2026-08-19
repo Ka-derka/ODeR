@@ -285,7 +285,7 @@ def _content_record(manifest: dict, key: str, expected_path: str) -> dict:
     return record
 
 
-def inspect_package(path: str) -> PackageInfo:
+def inspect_package(path: str, cache_destination: str | None = None) -> PackageInfo:
     path = os.path.abspath(path)
     if not os.path.isfile(path):
         raise PackageError("The selected .oder file does not exist.")
@@ -359,10 +359,20 @@ def inspect_package(path: str) -> PackageInfo:
             if cache_record["size"] != cache_size:
                 raise PackageError("The cached-index size does not match the manifest.")
             try:
-                with tempfile.TemporaryDirectory(prefix="oder-validate-") as temp_dir:
-                    extracted = os.path.join(temp_dir, CACHE_NAME)
+                if cache_destination:
+                    extracted = os.path.abspath(cache_destination)
+                    os.makedirs(os.path.dirname(extracted), exist_ok=True)
+                    try:
+                        os.remove(extracted)
+                    except FileNotFoundError:
+                        pass
                     _extract_cache(archive, by_name[CACHE_NAME], extracted, cache_record["sha256"])
                     cache_counts = _validate_cache_file(extracted, profile["base_url"])
+                else:
+                    with tempfile.TemporaryDirectory(prefix="oder-validate-") as temp_dir:
+                        extracted = os.path.join(temp_dir, CACHE_NAME)
+                        _extract_cache(archive, by_name[CACHE_NAME], extracted, cache_record["sha256"])
+                        cache_counts = _validate_cache_file(extracted, profile["base_url"])
             except (zipfile.BadZipFile, RuntimeError) as exc:
                 raise PackageError("The cached index in the package is corrupt.") from exc
             expected_counts = cache_record.get("counts") or {}
@@ -532,6 +542,7 @@ def _build_imported_profile(info: PackageInfo, profile_id: str, existing: dict |
         "base_url": payload["base_url"],
         "settings": settings,
         "index_source": state.get("index_source"),
+        "hosted_index": None,
         "last_crawled": state.get("last_crawled"),
         "folders_cached": int(state.get("folders_cached") or 0),
         "last_crawl_stats": state.get("last_crawl_stats"),
@@ -608,6 +619,30 @@ def import_directory(path: str, conflict_policy: str = "error", replace_profile_
     library.record_package("import", info.path, name=imported["name"],
                            package_type=info.package_type, replaced=result.replaced, scope=info.scope)
     return result
+
+
+def apply_hosted_cache(profile_id: str, info: PackageInfo, materialized_cache_path: str,
+                       expected_base_url: str) -> dict:
+    """Apply a validated hosted index while preserving local profile settings/history."""
+    expected_base_url = _canonical_base_url(expected_base_url)
+    if not info.has_cache or info.package_type != "full":
+        raise PackageError("A hosted index must be a full .oder package with a cached index.")
+    if info.base_url != expected_base_url:
+        raise PackageError("The hosted index belongs to a different base URL.")
+    counts = _validate_cache_file(materialized_cache_path, expected_base_url)
+    uri = "file:" + os.path.abspath(materialized_cache_path).replace("\\", "/") + "?mode=ro"
+    incoming = sqlite3.connect(uri, uri=True, timeout=30)
+    try:
+        rows = incoming.execute(
+            "SELECT url,name,is_dir,size,parent_url,crawled FROM nodes ORDER BY rowid"
+        )
+        cache.replace_all_nodes(profile_id, expected_base_url, rows)
+    finally:
+        incoming.close()
+    applied = cache.count_summary(profile_id)
+    if applied != counts:
+        raise PackageError("The hosted index changed unexpectedly while it was being applied.")
+    return applied
 
 
 def _materialize_cache(info: PackageInfo, destination: str) -> None:
