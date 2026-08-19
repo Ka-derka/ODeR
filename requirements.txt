@@ -1,2 +1,2 @@
 PySide6>=6.6
-requests>=2.31
+requests>=2.34.2
