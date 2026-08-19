@@ -3,25 +3,29 @@
 
 #define MyAppName "ODeR"
 #define MyAppVersion "0.15.2"
-#define MyAppExeName "OfflineDirectoryBrowser.exe"
+#define MyBuildExeName "ODeR-Portable.exe"
+#define MyAppExeName "ODeR.exe"
 
 [Setup]
 AppId={{D8C0F60B-AB9E-4D91-90AA-0BD000000001}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
-DefaultDirName={autopf}\Offline Directory Browser
+DefaultDirName={autopf}\ODeR
 DefaultGroupName={#MyAppName}
-OutputDir=installer-dist
-OutputBaseFilename=OfflineDirectoryBrowser-Setup
+OutputDir=release-dist
+OutputBaseFilename=ODeR Installer
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=admin
 UninstallDisplayIcon={app}\{#MyAppExeName}
 ChangesAssociations=yes
+LicenseFile=LICENSE
 
 [Files]
-Source: "dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\{#MyBuildExeName}"; DestDir: "{app}"; DestName: "{#MyAppExeName}"; Flags: ignoreversion
+Source: "LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
+Source: "THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

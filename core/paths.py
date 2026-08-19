@@ -1,8 +1,8 @@
-"""Application paths.
+"""Application paths for source, portable and installed builds.
 
-Runtime data remains beside the executable in portable mode, while bundled
-read-only assets (such as the icon) are resolved from PyInstaller's extracted
-resource directory when running as a one-file build.
+Portable builds keep their writable ``data`` directory beside the executable.
+Installed builds use the current user's local application-data directory so
+they can run normally from a protected location such as Program Files.
 """
 import os
 import sys
@@ -24,8 +24,23 @@ def resource_path(filename):
     return os.path.join(resource_root(), filename)
 
 
+def is_portable():
+    """Return whether a frozen build should keep data beside the executable."""
+    if not getattr(sys, "frozen", False):
+        return False
+    executable_name = os.path.basename(sys.executable).casefold()
+    marker_path = os.path.join(app_root(), "portable.flag")
+    return executable_name == "oder-portable.exe" or os.path.isfile(marker_path)
+
+
 def data_dir():
-    d = os.path.join(app_root(), "data")
+    if not getattr(sys, "frozen", False) or is_portable():
+        d = os.path.join(app_root(), "data")
+    else:
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if not local_app_data:
+            local_app_data = os.path.join(os.path.expanduser("~"), "AppData", "Local")
+        d = os.path.join(local_app_data, "ODeR")
     os.makedirs(d, exist_ok=True)
     return d
 

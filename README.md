@@ -53,10 +53,19 @@ The repository includes tests for cache paging and search, snapshots, crawl reco
 ## Build for Windows
 
 ```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
 .\build_windows.ps1
 ```
 
-The script installs PyInstaller and creates `dist\OfflineDirectoryBrowser.exe`. If Inno Setup is installed and `iscc.exe` is available, it also creates an installer in `installer-dist\` with the `.oder` file association.
+The script installs PyInstaller and prepares GitHub-ready files in `release-dist\`:
+
+- `ODeR-Portable.exe` — single-file portable application.
+- `ODeR-Portable.zip` — recommended portable download, including the executable, portable marker and licensing files.
+- `ODeR Installer.exe` — Windows installer with Start menu/optional desktop shortcuts, uninstall support and the `.oder` file association. This is created when Inno Setup 6 is installed.
+- `SHA256SUMS.txt` — SHA-256 checksums for the generated release assets.
+
+Portable ODeR stores its writable `data` directory beside the executable. The installed application stores writable data in `%LOCALAPPDATA%\ODeR`, not in `Program Files`. See [RELEASING.md](RELEASING.md) for the complete release checklist.
 
 ## `.oder` package format
 
@@ -80,6 +89,7 @@ tests/              standard-library unittest suite
 main.py              application entry point
 build.spec           PyInstaller definition
 installer.iss        optional Inno Setup installer
+RELEASING.md          Windows build and GitHub release checklist
 ```
 
 ## Contributing

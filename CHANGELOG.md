@@ -6,6 +6,9 @@ Notable changes to ODeR are recorded here.
 
 - Licensed ODeR under the MIT License, copyright 2026 kaderka.
 - Documented runtime, transitive, build-tool, and binary-distribution third-party licensing considerations.
+- Added distinct portable and installed storage modes: portable data stays beside the executable, while installed data uses `%LOCALAPPDATA%\ODeR`.
+- Added one-command Windows release packaging for `ODeR-Portable.exe`, `ODeR-Portable.zip`, `ODeR Installer.exe`, and SHA-256 checksums.
+- Included the MIT license and third-party notices in both portable and installed distributions.
 
 ## 0.15.2 — 2026-08-19
 

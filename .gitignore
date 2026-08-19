@@ -32,6 +32,7 @@ downloads/
 build/
 dist/
 installer-dist/
+release-dist/
 *.exe
 *.msi
 
