@@ -41,6 +41,9 @@ try {
         if ($env:ProgramFiles) {
             $innoCandidates += Join-Path $env:ProgramFiles "Inno Setup 6\ISCC.exe"
         }
+        if ($env:LOCALAPPDATA) {
+            $innoCandidates += Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"
+        }
         $isccPath = $innoCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
     }
 

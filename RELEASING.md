@@ -31,7 +31,7 @@ This checklist creates the portable and installed editions from one source tree.
    .\build_windows.ps1
    ```
 
-The script searches both `PATH` and the standard Inno Setup 6 installation directories. If Inno Setup is unavailable, it still produces the portable files and explains why the installer was skipped.
+The script searches `PATH` plus the standard system-wide and per-user Inno Setup 6 installation directories. If Inno Setup is unavailable, it still produces the portable files and explains why the installer was skipped.
 
 ## Release assets
 
