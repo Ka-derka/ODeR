@@ -1,0 +1,31 @@
+name: Feature request
+description: Suggest a focused improvement to ODeR.
+title: "[Feature]: "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or limitation
+      description: What is difficult today, and who is affected?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the user-visible result rather than only an implementation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Mention any current workaround or alternative design.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Mockups and sanitized examples are welcome.

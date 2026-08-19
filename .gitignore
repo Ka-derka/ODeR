@@ -1,0 +1,50 @@
+# Python caches and environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.python-version
+
+# Test and tool caches
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ODeR runtime data (may contain private URLs and downloaded files)
+data/
+downloads/
+*.part
+*.oder
+*.sqlite
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.db-wal
+*.db-shm
+*.log
+
+# Build output
+build/
+dist/
+installer-dist/
+*.exe
+*.msi
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.code-workspace
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Local scratch files
+work/
+scratch/
+*.tmp
+*.bak
