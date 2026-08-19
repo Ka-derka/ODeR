@@ -19,6 +19,7 @@ Current version: **0.16.0**
 - Manage, repair, compact, or clear cached indexes without touching downloads.
 - Choose Graphite, Midnight, Light, OLED Black, or a custom color palette.
 - Check stable or preview GitHub releases in-app and download verified updates.
+- Keep one ODeR instance per Windows user and forward `.oder` files to the running window.
 
 ## Requirements
 

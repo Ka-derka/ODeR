@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QToolButton, QHeaderView, QFrame,
     QMenu, QApplication, QStyle, QComboBox, QSizePolicy
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QSize
 from html import escape
 
 from core import cache, downloader, library
@@ -290,25 +290,26 @@ class BrowserWidget(QWidget):
             item = QTreeWidgetItem([child["name"], child.get("size") or "", kind, ""])
             item.setData(0, Qt.UserRole, url)
             item.setIcon(0, folder_icon if child["is_dir"] else file_icon)
+            item.setSizeHint(0, QSize(0, 37))
             self.list_widget.addTopLevelItem(item)
             self._visible_urls.append(url)
             if not child["is_dir"]:
                 actions = QWidget()
                 actions.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-                actions.setMinimumSize(162, 29)
+                actions.setMinimumSize(166, 35)
                 actions_layout = QHBoxLayout(actions)
-                actions_layout.setContentsMargins(0, 0, 0, 0)
+                actions_layout.setContentsMargins(0, 4, 8, 4)
                 actions_layout.setSpacing(6)
                 actions_layout.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 actions_layout.addStretch(1)
                 dl_btn = QPushButton("Download")
-                dl_btn.setObjectName("tableButton")
-                dl_btn.setFixedSize(78, 27)
+                dl_btn.setObjectName("rowActionButton")
+                dl_btn.setFixedSize(76, 25)
                 dl_btn.clicked.connect(lambda _, u=url, n=child["name"]: self._download(u, n))
                 actions_layout.addWidget(dl_btn)
                 copy_btn = QPushButton("Copy link")
-                copy_btn.setObjectName("tableButton")
-                copy_btn.setFixedSize(78, 27)
+                copy_btn.setObjectName("rowActionButton")
+                copy_btn.setFixedSize(76, 25)
                 copy_btn.setToolTip("Copy the direct URL — paste into a regular browser tab if a "
                                      "site's own download protection (e.g. Cloudflare) blocks the app's download.")
                 copy_btn.clicked.connect(lambda _, u=url: self._copy_link(u))

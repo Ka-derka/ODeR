@@ -1,6 +1,7 @@
 import os
 import sys
 from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QMessageBox
 from PySide6.QtGui import QIcon
 from PySide6.QtCore import QTimer
 
@@ -8,6 +9,7 @@ from core.paths import resource_path
 from core.version import APP_VERSION
 from gui.main_window import MainWindow
 from gui.tray import setup_tray
+from gui.single_instance import SingleInstance
 
 
 def main():
@@ -16,19 +18,33 @@ def main():
     app.setApplicationName("ODeR")
     app.setApplicationVersion(APP_VERSION)
 
+    instance = SingleInstance(parent=app)
+    if not instance.acquire():
+        if not instance.forward(sys.argv[1:], os.getcwd()):
+            QMessageBox.warning(
+                None,
+                "ODeR is already running",
+                "Another ODeR instance is running, but it could not be brought to the foreground.",
+            )
+            return 1
+        return 0
+
     icon_path = resource_path("icon.png")
     if os.path.exists(icon_path):
         app.setWindowIcon(QIcon(icon_path))
 
     window = MainWindow()
+    instance.message_received.connect(window.handle_external_message)
+    for pending_message in instance.set_ready():
+        window.handle_external_message(pending_message)
     setup_tray(app, window)
     window.show()
-    package_path = next((arg for arg in sys.argv[1:] if arg.lower().endswith(".oder") and os.path.isfile(arg)), None)
-    if package_path:
-        QTimer.singleShot(250, lambda path=os.path.abspath(package_path): window._import_profile_package(path))
+    window.handle_external_arguments(sys.argv[1:], os.getcwd(), delay_ms=250)
 
-    sys.exit(app.exec())
+    exit_code = app.exec()
+    instance.close()
+    return exit_code
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

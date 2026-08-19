@@ -146,6 +146,7 @@ QPushButton:disabled, QToolButton:disabled { background: @DISABLED@; color: @DIS
 QPushButton#accentButton { background: @ACCENT@; border-color: @ACCENT@; color: @ACCENT_TEXT@; font-weight: 600; }
 QPushButton#accentButton:hover { background: @ACCENT_HOVER@; border-color: @ACCENT_HOVER@; }
 QPushButton#tableButton { padding: 0; min-width: 78px; max-width: 78px; min-height: 27px; max-height: 27px; text-align: center; }
+QPushButton#rowActionButton { padding: 0; min-width: 76px; max-width: 76px; min-height: 25px; max-height: 25px; text-align: center; }
 QPushButton#smallActionButton { padding: 0 10px; min-width: 88px; max-width: 88px; min-height: 28px; max-height: 28px; text-align: center; }
 QWidget#tabRow { background: @BUTTON@; border: 1px solid @BUTTON_BORDER@; border-radius: 5px; }
 QWidget#tabRow[selected="true"] { background: @SELECTION@; border-color: @ACCENT@; }
@@ -1265,6 +1266,31 @@ class MainWindow(QMainWindow):
         if not getattr(sys, "frozen", False):
             return "source"
         return "portable" if is_portable() else "installed"
+
+    @Slot(object)
+    def handle_external_message(self, payload):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        self.handle_external_arguments(
+            payload.get("arguments") or [], payload.get("cwd") or os.getcwd()
+        )
+
+    def handle_external_arguments(self, arguments, cwd=None, delay_ms=0):
+        cwd = cwd or os.getcwd()
+        package_path = None
+        for argument in arguments or []:
+            candidate = str(argument)
+            if not os.path.isabs(candidate):
+                candidate = os.path.abspath(os.path.join(cwd, candidate))
+            if candidate.casefold().endswith(".oder") and os.path.isfile(candidate):
+                package_path = candidate
+                break
+        if package_path:
+            QTimer.singleShot(
+                max(0, int(delay_ms)),
+                lambda path=package_path: self._import_profile_package(path),
+            )
 
     def _settings_changed(self):
         self._apply_settings_style()
