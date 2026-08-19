@@ -14,11 +14,18 @@ class CacheFeatureTests(unittest.TestCase):
         self.base = "https://example.test/files/"
         self.profile_dir = os.path.join(self.temp.name, self.profile_id)
         os.makedirs(self.profile_dir, exist_ok=True)
-        self.patcher = patch.object(
-            cache, "profile_cache_db_path",
-            lambda _profile_id: os.path.join(self.profile_dir, "cache.sqlite3"),
-        )
-        self.patcher.start()
+        self.patchers = [
+            patch.object(
+                cache, "profile_cache_db_path",
+                lambda _profile_id: os.path.join(self.profile_dir, "cache.sqlite3"),
+            ),
+            patch.object(
+                cache, "profile_cache_checkpoint_path",
+                lambda _profile_id: os.path.join(self.profile_dir, "cache.full-update-backup.sqlite3"),
+            ),
+        ]
+        for patcher in self.patchers:
+            patcher.start()
         cache.initialize(self.profile_id, self.base)
         cache.replace_children(self.profile_id, self.base, [
             (self.base + "photos/", "photos", 1, None, self.base, 1),
@@ -30,7 +37,9 @@ class CacheFeatureTests(unittest.TestCase):
         ])
 
     def tearDown(self):
-        self.patcher.stop()
+        for patcher in reversed(self.patchers):
+            patcher.stop()
+        cache._ACTIVE_FULL_UPDATES.discard(self.profile_id)
         cache._SCHEMA_READY.discard(self.profile_id)
         self.temp.cleanup()
 
@@ -117,6 +126,38 @@ class CacheFeatureTests(unittest.TestCase):
             (self.base + "archive/beta.txt", "beta.txt", 0, "2 KB", self.base + "archive/", 0),
         ])
         self.assertEqual([row["name"] for row in cache.search(self.profile_id, "beta")], ["beta.txt"])
+
+    def test_full_update_checkpoint_rolls_back_every_cache_change(self):
+        cache.begin_full_update(self.profile_id)
+        cache.replace_all_nodes(self.profile_id, self.base, [
+            (self.base + "replacement.bin", "replacement.bin", 0, "10 MB", self.base, 0),
+        ])
+        self.assertIsNotNone(cache.get_node(self.profile_id, self.base + "replacement.bin"))
+
+        self.assertTrue(cache.rollback_full_update(self.profile_id))
+
+        self.assertIsNone(cache.get_node(self.profile_id, self.base + "replacement.bin"))
+        self.assertIsNotNone(cache.get_node(self.profile_id, self.base + "manual.pdf"))
+
+    def test_successful_full_update_discards_checkpoint(self):
+        checkpoint = cache.begin_full_update(self.profile_id)
+        cache.replace_all_nodes(self.profile_id, self.base, [
+            (self.base + "replacement.bin", "replacement.bin", 0, "10 MB", self.base, 0),
+        ])
+        cache.commit_full_update(self.profile_id)
+        self.assertFalse(os.path.exists(checkpoint))
+        self.assertIsNotNone(cache.get_node(self.profile_id, self.base + "replacement.bin"))
+
+    def test_interrupted_full_update_is_recovered_during_initialize(self):
+        checkpoint = cache.begin_full_update(self.profile_id)
+        cache.replace_all_nodes(self.profile_id, self.base, [
+            (self.base + "partial.bin", "partial.bin", 0, "1 MB", self.base, 0),
+        ])
+        cache._ACTIVE_FULL_UPDATES.discard(self.profile_id)  # simulate a new process
+        cache.initialize(self.profile_id, self.base)
+        self.assertFalse(os.path.exists(checkpoint))
+        self.assertIsNone(cache.get_node(self.profile_id, self.base + "partial.bin"))
+        self.assertIsNotNone(cache.get_node(self.profile_id, self.base + "manual.pdf"))
 
     def test_wal_reader_does_not_wait_for_python_writer_lock(self):
         writer_ready = threading.Event()

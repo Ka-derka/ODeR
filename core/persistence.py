@@ -19,11 +19,13 @@ def _temporary_path(path: str, label: str = "tmp") -> str:
     return f"{path}.{os.getpid()}.{threading.get_ident()}.{label}"
 
 
-def _read_json(path: str, expected_type=None):
+def _read_json(path: str, expected_type=None, validator=None):
     with open(path, "r", encoding="utf-8") as handle:
         value = json.load(handle)
     if expected_type is not None and not isinstance(value, expected_type):
         raise ValueError(f"expected {expected_type.__name__} JSON")
+    if validator is not None and not validator(value):
+        raise ValueError("JSON structure validation failed")
     return value
 
 
@@ -66,12 +68,12 @@ def _log_recovery(message: str) -> None:
         pass
 
 
-def load_json(path: str, default, expected_type=None):
+def load_json(path: str, default, expected_type=None, validator=None):
     """Load JSON, restoring a valid backup when the primary is unreadable."""
     if not os.path.exists(path):
         backup = path + ".bak"
         try:
-            recovered = _read_json(backup, expected_type)
+            recovered = _read_json(backup, expected_type, validator)
         except (OSError, UnicodeError, ValueError, TypeError):
             return deepcopy(default)
         try:
@@ -81,11 +83,11 @@ def load_json(path: str, default, expected_type=None):
             _log_recovery(f"Using backup data for missing {os.path.basename(path)}; restoring it failed: {exc}")
         return recovered
     try:
-        return _read_json(path, expected_type)
+        return _read_json(path, expected_type, validator)
     except (OSError, UnicodeError, ValueError, TypeError):
         backup = path + ".bak"
         try:
-            recovered = _read_json(backup, expected_type)
+            recovered = _read_json(backup, expected_type, validator)
         except (OSError, UnicodeError, ValueError, TypeError):
             quarantined = _quarantine(path)
             if quarantined:
@@ -110,7 +112,7 @@ def save_json(path: str, value, *, indent: int = 2, backup: bool = True) -> None
     directory = os.path.dirname(os.path.abspath(path))
     os.makedirs(directory, exist_ok=True)
     temporary = _temporary_path(path)
-    backup = path + ".bak"
+    backup_path = path + ".bak"
     try:
         with open(temporary, "w", encoding="utf-8", newline="\n") as handle:
             json.dump(value, handle, indent=indent, ensure_ascii=False)
@@ -124,11 +126,11 @@ def save_json(path: str, value, *, indent: int = 2, backup: bool = True) -> None
             except (OSError, UnicodeError, ValueError, TypeError):
                 _quarantine(path)
             else:
-                _flush_copy(path, backup)
+                _flush_copy(path, backup_path)
 
         os.replace(temporary, path)
-        if not os.path.exists(backup):
-            _flush_copy(path, backup)
+        if not os.path.exists(backup_path):
+            _flush_copy(path, backup_path)
     finally:
         try:
             os.remove(temporary)

@@ -17,12 +17,14 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
 
-from core.paths import profile_cache_db_path, profile_cache_path
+from core.paths import profile_cache_checkpoint_path, profile_cache_db_path, profile_cache_path
 
 _LOCKS: dict[str, threading.RLock] = {}
 _LOCKS_GUARD = threading.Lock()
 _SCHEMA_READY: set[str] = set()
 _SCHEMA_GUARD = threading.Lock()
+_ACTIVE_FULL_UPDATES: set[str] = set()
+_CHECKPOINT_GUARD = threading.Lock()
 SCHEMA_VERSION = 1
 
 
@@ -238,6 +240,29 @@ def _parent_url(url: str, base_url: str) -> str | None:
 def initialize(profile_id: str, base_url: str) -> None:
     base_url = _norm_base(base_url)
     with _lock(profile_id):
+        checkpoint = profile_cache_checkpoint_path(profile_id)
+        with _CHECKPOINT_GUARD:
+            recover_checkpoint = os.path.isfile(checkpoint) and profile_id not in _ACTIVE_FULL_UPDATES
+        if recover_checkpoint:
+            try:
+                replace_database(profile_id, checkpoint)
+                os.remove(checkpoint)
+                try:
+                    from core import applog
+                    applog.log(
+                        f"Restored the last complete cache for profile {profile_id} after an interrupted full update."
+                    )
+                except Exception:
+                    pass
+            except Exception as exc:
+                try:
+                    from core import applog
+                    applog.log(
+                        f"Could not restore the full-update checkpoint for profile {profile_id}: {exc}"
+                    )
+                except Exception:
+                    pass
+                raise
         try:
             conn = _connect(profile_id)
         except sqlite3.DatabaseError:
@@ -969,6 +994,61 @@ def backup_database(profile_id: str, destination: str) -> None:
         finally:
             target.close()
             source.close()
+
+
+def begin_full_update(profile_id: str) -> str:
+    """Checkpoint the current cache before an all-or-nothing full update."""
+    checkpoint = profile_cache_checkpoint_path(profile_id)
+    temporary = checkpoint + f".creating-{uuid.uuid4().hex}"
+    with _lock(profile_id):
+        with _CHECKPOINT_GUARD:
+            if profile_id in _ACTIVE_FULL_UPDATES:
+                raise RuntimeError("A protected full update is already active for this directory.")
+        if os.path.exists(checkpoint):
+            # A stale checkpoint means a previous process stopped before it
+            # could commit. Restore it before starting a new full update.
+            replace_database(profile_id, checkpoint)
+            os.remove(checkpoint)
+        try:
+            backup_database(profile_id, temporary)
+            os.replace(temporary, checkpoint)
+            with _CHECKPOINT_GUARD:
+                _ACTIVE_FULL_UPDATES.add(profile_id)
+            return checkpoint
+        finally:
+            try:
+                os.remove(temporary)
+            except FileNotFoundError:
+                pass
+
+
+def commit_full_update(profile_id: str) -> None:
+    """Commit a successful protected full update by removing its checkpoint."""
+    checkpoint = profile_cache_checkpoint_path(profile_id)
+    with _lock(profile_id):
+        try:
+            os.remove(checkpoint)
+        except FileNotFoundError:
+            pass
+        finally:
+            with _CHECKPOINT_GUARD:
+                _ACTIVE_FULL_UPDATES.discard(profile_id)
+
+
+def rollback_full_update(profile_id: str) -> bool:
+    """Restore the cache saved by ``begin_full_update``."""
+    checkpoint = profile_cache_checkpoint_path(profile_id)
+    with _lock(profile_id):
+        restored = False
+        try:
+            if os.path.isfile(checkpoint):
+                replace_database(profile_id, checkpoint)
+                os.remove(checkpoint)
+                restored = True
+            return restored
+        finally:
+            with _CHECKPOINT_GUARD:
+                _ACTIVE_FULL_UPDATES.discard(profile_id)
 
 
 def backup_subtree(profile_id: str, root_url: str, destination: str) -> None:

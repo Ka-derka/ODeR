@@ -25,9 +25,16 @@ from core import cache
 from core import crawl_state
 from core.settings import load_settings
 
-LINK_RE = re.compile(r'<a\s+[^>]*href="([^"]+)"[^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL)
+LINK_RE = re.compile(
+    r"<a\b[^>]*\bhref\s*=\s*(?:\"(?P<double>[^\"]*)\"|'(?P<single>[^']*)'|"
+    r"(?P<bare>[^\s\"'=<>`]+))[^>]*>(?P<inner>.*?)</a\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
 TAG_RE = re.compile(r"<[^>]+>")
-SIZE_RE = re.compile(r"(\d+(?:\.\d+)?\s?[KMGT]B?)\b", re.IGNORECASE)
+SIZE_RE = re.compile(
+    r"(\d+(?:\.\d+)?\s*(?:[KMGTPE](?:I?B)?|B|BYTES?))\b",
+    re.IGNORECASE,
+)
 
 BLOCK_MARKERS = ["temporarily banned", "rate limit", "slow down", "too many requests", "access denied", "blocked"]
 
@@ -59,14 +66,21 @@ def _url_depth(url, base_url):
 def parse_listing(page_url, page_html):
     entries = []
     seen = set()
+    page_parts = urlparse(page_url)
+    page_origin = (page_parts.scheme.casefold(), page_parts.netloc.casefold())
     for m in LINK_RE.finditer(page_html):
-        href, inner = m.group(1), m.group(2)
+        href = m.group("double") or m.group("single") or m.group("bare") or ""
+        inner = m.group("inner")
         name = strip_tags(inner)
         if not href or href.startswith("?") or href.startswith("#") or href in ("../", "..", "/"):
             continue
         full_url = urljoin(page_url, href)
-        if urlparse(full_url).netloc != urlparse(page_url).netloc:
+        full_parts = urlparse(full_url)
+        if (full_parts.scheme.casefold(), full_parts.netloc.casefold()) != page_origin:
             continue
+        # Listing sort links and file links with fragments are not distinct
+        # cached entries. Keep the canonical resource URL only.
+        full_url = full_parts._replace(query="", fragment="").geturl()
         if not full_url.startswith(page_url) or full_url == page_url or full_url in seen:
             continue
         seen.add(full_url)
@@ -76,10 +90,14 @@ def parse_listing(page_url, page_html):
         if not display_name:
             continue
 
-        window = page_html[m.end(): m.end() + 200]
+        window = page_html[m.end(): m.end() + 500]
         newline_pos = window.find("\n")
-        next_tag_pos = window.find("<")
-        cutoffs = [p for p in (newline_pos, next_tag_pos) if p != -1]
+        row_end_pos = window.lower().find("</tr")
+        next_link_pos = window.lower().find("<a")
+        # Formatting tags between a link and its size are common in table-
+        # based listings, so stop at the row, line, or next link—not merely
+        # at the first closing cell tag.
+        cutoffs = [p for p in (newline_pos, row_end_pos, next_link_pos) if p != -1]
         tail = window[: min(cutoffs)] if cutoffs else window
         size_match = SIZE_RE.search(strip_tags(tail))
 
@@ -336,6 +354,22 @@ def _save_history(profile, stats, started_iso):
 
 
 def crawl_profile(profile, progress_cb=None, log=print, stop_check=None, mode="resume"):
+    """Run a crawl and never leave a protected replacement half-applied."""
+    try:
+        return _crawl_profile(profile, progress_cb, log, stop_check, mode)
+    except Exception:
+        # Most expected failures are handled below so the UI receives useful
+        # progress. This final guard also covers unexpected parser, database,
+        # or callback failures during an all-or-nothing replacement.
+        try:
+            if cache.rollback_full_update(profile["id"]):
+                log("restored the last complete index after the update failed.")
+        except Exception as rollback_error:
+            log(f"the failed update could not be rolled back immediately: {rollback_error}")
+        raise
+
+
+def _crawl_profile(profile, progress_cb=None, log=print, stop_check=None, mode="resume"):
     """Crawl a profile into SQLite incrementally using a bounded worker pool.
 
     Directory listings are largely I/O bound, so a handful of concurrent
@@ -383,6 +417,7 @@ def crawl_profile(profile, progress_cb=None, log=print, stop_check=None, mode="r
         previous_request.pop("last_modified", None)
     if explicit_hosted_url or auto_detect_indexes:
         hosted_snapshot_id = None
+        hosted_checkpoint_active = False
         detect_session = make_session(settings)
         try:
             log("checking for a hosted .oder index before crawling…")
@@ -407,6 +442,8 @@ def crawl_profile(profile, progress_cb=None, log=print, stop_check=None, mode="r
                         log(f"hosted .oder has not changed: {result.source}")
                     else:
                         emit({"phase": "hosted_apply", "current": result.source})
+                        cache.begin_full_update(profile["id"])
+                        hosted_checkpoint_active = True
                         hosted_snapshot_id = cache.begin_snapshot(profile["id"], "hosted", base_url)
                         counts = oder_package.apply_hosted_cache(
                             profile["id"], result.info, result.cache_path, base_url
@@ -415,6 +452,8 @@ def crawl_profile(profile, progress_cb=None, log=print, stop_check=None, mode="r
                             profile["id"], hosted_snapshot_id, "completed"
                         )
                         hosted_snapshot_id = None
+                        cache.commit_full_update(profile["id"])
+                        hosted_checkpoint_active = False
                         log(
                             f"loaded hosted .oder: {result.source} — "
                             f"{counts['folders']:,} folders, {counts['files']:,} files"
@@ -455,7 +494,15 @@ def crawl_profile(profile, progress_cb=None, log=print, stop_check=None, mode="r
             emit(stats)
             return False
         except Exception as exc:
-            if hosted_snapshot_id is not None:
+            if hosted_checkpoint_active:
+                try:
+                    cache.rollback_full_update(profile["id"])
+                    hosted_checkpoint_active = False
+                    hosted_snapshot_id = None
+                    log("restored the previous index after the hosted package could not be applied.")
+                except Exception as rollback_error:
+                    log(f"could not immediately restore the previous hosted index: {rollback_error}")
+            elif hosted_snapshot_id is not None:
                 try:
                     cache.finish_snapshot(profile["id"], hosted_snapshot_id, "partial")
                 except Exception:
@@ -464,6 +511,10 @@ def crawl_profile(profile, progress_cb=None, log=print, stop_check=None, mode="r
         finally:
             detect_session.close()
 
+    full_checkpoint_active = False
+    if mode == "full":
+        cache.begin_full_update(profile["id"])
+        full_checkpoint_active = True
     snapshot_id = cache.begin_snapshot(profile["id"], mode, base_url)
     if mode == "full":
         cache.mark_all_dirs_pending(profile["id"])
@@ -509,6 +560,20 @@ def crawl_profile(profile, progress_cb=None, log=print, stop_check=None, mode="r
                      "files_discovered": cache.count_files(profile["id"]), "elapsed": elapsed,
                      "rate": 0.0, "workers": workers, "mode": mode}
             stats["changes"] = cache.finish_snapshot(profile["id"], snapshot_id, "partial")
+            if full_checkpoint_active:
+                cache.rollback_full_update(profile["id"])
+                full_checkpoint_active = False
+                restored = cache.count_summary(profile["id"])
+                pending_after = len(cache.pending_dirs(profile["id"]))
+                stats.update(
+                    queued=pending_after,
+                    folders_discovered=restored["folders"],
+                    files_discovered=restored["files"],
+                )
+                stats["changes"] = {
+                    "new_count": 0, "removed_count": 0, "changed_count": 0,
+                    "rolled_back": True,
+                }
             crawl_state.mark_resumable(profile["id"], pending_after, 0, str(exc))
             emit(stats)
             _save_history(profile, stats, started_iso)
@@ -516,26 +581,54 @@ def crawl_profile(profile, progress_cb=None, log=print, stop_check=None, mode="r
             return False
 
     if index_source and index_source.get("mode") == "full_tree":
-        nodes = index_source.get("nodes", {})
-        rows = ((url, node.get("name", "/"), 1 if node.get("is_dir") else 0,
-                 node.get("size"), cache._parent_url(url, base_url),
-                 1 if node.get("crawled", node.get("is_dir")) else 0)
-                for url, node in nodes.items())
-        cache.replace_all_nodes(profile["id"], base_url, rows)
-        crawled_dirs = cache.count_dirs(profile["id"])
-        elapsed = max(0.001, time.time() - started_at)
-        stats = {"done": True, "crawled": crawled_dirs, "current": None, "queued": 0,
-                 "requests": 0, "folders_discovered": crawled_dirs,
-                 "files_discovered": cache.count_files(profile["id"]),
-                 "elapsed": elapsed, "rate": 0.0, "workers": workers, "mode": mode}
-        changes = cache.finish_snapshot(profile["id"], snapshot_id, "completed")
-        stats["changes"] = changes
-        emit(stats)
-        crawl_state.mark_completed(profile["id"], crawled_dirs)
-        _save_history(profile, stats, started_iso)
-        log(f"done — full tree pulled directly, {crawled_dirs} folders, "
-            f"{cache.count_files(profile['id'])} files, no crawling needed.")
-        return True
+        try:
+            nodes = index_source.get("nodes", {})
+            rows = ((url, node.get("name", "/"), 1 if node.get("is_dir") else 0,
+                     node.get("size"), cache._parent_url(url, base_url),
+                     1 if node.get("crawled", node.get("is_dir")) else 0)
+                    for url, node in nodes.items())
+            cache.replace_all_nodes(profile["id"], base_url, rows)
+            crawled_dirs = cache.count_dirs(profile["id"])
+            elapsed = max(0.001, time.time() - started_at)
+            stats = {"done": True, "crawled": crawled_dirs, "current": None, "queued": 0,
+                     "requests": 0, "folders_discovered": crawled_dirs,
+                     "files_discovered": cache.count_files(profile["id"]),
+                     "elapsed": elapsed, "rate": 0.0, "workers": workers, "mode": mode}
+            changes = cache.finish_snapshot(profile["id"], snapshot_id, "completed")
+            stats["changes"] = changes
+            if full_checkpoint_active:
+                cache.commit_full_update(profile["id"])
+                full_checkpoint_active = False
+            emit(stats)
+            crawl_state.mark_completed(profile["id"], crawled_dirs)
+            _save_history(profile, stats, started_iso)
+            log(f"done — full tree pulled directly, {crawled_dirs} folders, "
+                f"{cache.count_files(profile['id'])} files, no crawling needed.")
+            return True
+        except Exception as exc:
+            try:
+                cache.finish_snapshot(profile["id"], snapshot_id, "partial")
+            except Exception:
+                pass
+            if full_checkpoint_active:
+                cache.rollback_full_update(profile["id"])
+                full_checkpoint_active = False
+            restored = cache.count_summary(profile["id"])
+            elapsed = max(0.001, time.time() - started_at)
+            stats = {
+                "done": False, "error": str(exc), "crawled": 0, "current": None,
+                "queued": len(cache.pending_dirs(profile["id"])), "requests": 0,
+                "folders_discovered": restored["folders"],
+                "files_discovered": restored["files"], "elapsed": elapsed,
+                "rate": 0.0, "workers": workers, "mode": mode,
+                "changes": {"new_count": 0, "removed_count": 0,
+                            "changed_count": 0, "rolled_back": True},
+            }
+            crawl_state.mark_resumable(profile["id"], stats["queued"], 0, str(exc))
+            emit(stats)
+            _save_history(profile, stats, started_iso)
+            log(f"full-tree update failed; the previous index was restored: {exc}")
+            return False
 
     use_json = bool(index_source and index_source.get("mode") == "json_listing")
     json_headers = {"Accept": "application/json"} if (use_json and index_source.get("accept_header")) else None
@@ -684,6 +777,25 @@ def crawl_profile(profile, progress_cb=None, log=print, stop_check=None, mode="r
         stats["error"] = "some directories failed and remain queued"
     snapshot_status = "completed" if stats["done"] else ("stopped" if stopped else "partial")
     stats["changes"] = cache.finish_snapshot(profile["id"], snapshot_id, snapshot_status)
+    if full_checkpoint_active:
+        if stats["done"]:
+            cache.commit_full_update(profile["id"])
+            full_checkpoint_active = False
+        else:
+            cache.rollback_full_update(profile["id"])
+            full_checkpoint_active = False
+            restored = cache.count_summary(profile["id"])
+            pending_after = len(cache.pending_dirs(profile["id"]))
+            discovered, files = restored["folders"], restored["files"]
+            stats.update(
+                queued=pending_after,
+                folders_discovered=discovered,
+                files_discovered=files,
+            )
+            stats["changes"] = {
+                "new_count": 0, "removed_count": 0, "changed_count": 0,
+                "rolled_back": True,
+            }
     if stats["done"]:
         crawl_state.mark_completed(profile["id"], count)
     else:

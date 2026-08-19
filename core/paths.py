@@ -88,5 +88,9 @@ def profile_cache_db_path(profile_id):
     return os.path.join(profile_dir(profile_id), "cache.sqlite3")
 
 
+def profile_cache_checkpoint_path(profile_id):
+    return os.path.join(profile_dir(profile_id), "cache.full-update-backup.sqlite3")
+
+
 def profile_crawl_state_path(profile_id):
     return os.path.join(profile_dir(profile_id), "crawl_state.json")

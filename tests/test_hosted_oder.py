@@ -53,12 +53,16 @@ class HostedOderTests(unittest.TestCase):
         def profile_cache_db_path(profile_id):
             return os.path.join(profile_dir(profile_id), "cache.sqlite3")
 
+        def profile_cache_checkpoint_path(profile_id):
+            return os.path.join(profile_dir(profile_id), "cache.full-update-backup.sqlite3")
+
         self.patchers = [
             patch.object(profiles, "profiles_index_path", lambda: os.path.join(self.data, "profiles.json")),
             patch.object(profiles, "profile_dir", profile_dir),
             patch.object(profiles, "profile_cache_path", profile_cache_path),
             patch.object(cache, "profile_cache_path", profile_cache_path),
             patch.object(cache, "profile_cache_db_path", profile_cache_db_path),
+            patch.object(cache, "profile_cache_checkpoint_path", profile_cache_checkpoint_path),
             patch.object(oder_package, "data_dir", lambda: self.data),
             patch.object(oder_package, "profile_dir", profile_dir),
             patch.object(oder_package, "profile_cache_db_path", profile_cache_db_path),
@@ -84,6 +88,7 @@ class HostedOderTests(unittest.TestCase):
     def tearDown(self):
         for patcher in reversed(self.patchers):
             patcher.stop()
+        cache._ACTIVE_FULL_UPDATES.clear()
         cache._SCHEMA_READY.clear()
         self.temp.cleanup()
 
@@ -197,6 +202,40 @@ class HostedOderTests(unittest.TestCase):
         stored = profiles.get_profile(self.profile["id"])
         self.assertEqual(stored["hosted_index"]["source"], package_url)
         self.assertEqual(stored["hosted_index"]["etag"], '"crawl-v1"')
+
+    def test_failed_hosted_apply_restores_previous_index_before_fallback(self):
+        base = self.profile["base_url"]
+        package_url = base + "index.oder"
+        cache.replace_children(self.profile["id"], base, [
+            (base + "last-known-good.bin", "last-known-good.bin", 0, "7 KB", base, 0),
+        ])
+        session = FakeSession({
+            base: (200, b"<html></html>", {}),
+            package_url: (200, self.package_bytes, {}),
+        })
+
+        def fail_after_replacement(profile_id, _info, _path, expected_base):
+            cache.replace_children(profile_id, expected_base, [
+                (expected_base + "partial.bin", "partial.bin", 0, "1 KB", expected_base, 0),
+            ])
+            raise oder_package.PackageError("simulated post-apply validation failure")
+
+        messages = []
+        with (
+            patch.object(crawl, "make_session", return_value=session),
+            patch.object(crawl, "load_settings", return_value={
+                "network_max_connections": 12, "incremental_stale_days": 7,
+            }),
+            patch.object(crawl.oder_package, "apply_hosted_cache", side_effect=fail_after_replacement),
+            patch.object(crawl.index_detect, "detect_index", side_effect=RuntimeError("fallback unavailable")),
+        ):
+            self.assertFalse(crawl.crawl_profile(
+                self.profile, progress_cb=lambda _progress: None, log=messages.append,
+            ))
+
+        self.assertIsNotNone(cache.get_node(self.profile["id"], base + "last-known-good.bin"))
+        self.assertIsNone(cache.get_node(self.profile["id"], base + "partial.bin"))
+        self.assertTrue(any("restored the previous index" in message for message in messages))
 
     def test_missing_hosted_package_falls_back_to_existing_index_detection(self):
         base = self.profile["base_url"]

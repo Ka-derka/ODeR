@@ -1,7 +1,7 @@
 """Global application settings."""
 import os
 from core.paths import data_dir
-from core.persistence import load_json, save_json
+from core.state_schema import load_document, save_document
 from core.version import APP_VERSION
 
 
@@ -44,7 +44,7 @@ DEFAULTS = {
 
 
 def load_settings():
-    data = load_json(settings_path(), {}, dict)
+    data = load_document(settings_path(), "settings", {}, dict)
     out = dict(DEFAULTS)
     out.update(data)
     custom = dict(DEFAULTS["custom_theme"])
@@ -58,5 +58,5 @@ def save_settings(data):
     settings = load_settings()
     settings.update(data or {})
     p = settings_path()
-    save_json(p, settings)
+    save_document(p, "settings", settings, dict)
     return settings

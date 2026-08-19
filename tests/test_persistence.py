@@ -1,4 +1,5 @@
 import glob
+import json
 import os
 import sqlite3
 import tempfile
@@ -8,9 +9,41 @@ from unittest.mock import patch
 
 from core import cache, profiles, settings
 from core.persistence import load_json, save_json
+from core.state_schema import load_document, save_document, StateVersionError
 
 
 class PersistenceTests(unittest.TestCase):
+    def test_legacy_state_is_migrated_into_versioned_envelope(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            path = os.path.join(temporary_dir, "profiles.json")
+            legacy = [{"id": "p", "base_url": "https://example.test/"}]
+            save_json(path, legacy)
+
+            loaded = load_document(path, "profiles", [], list)
+
+            self.assertEqual(loaded, legacy)
+            with open(path, "r", encoding="utf-8") as handle:
+                stored = json.load(handle)
+            self.assertEqual(stored["format"], "oder-state")
+            self.assertEqual(stored["kind"], "profiles")
+            self.assertEqual(stored["schema_version"], 1)
+            self.assertEqual(stored["data"], legacy)
+
+    def test_future_state_schema_is_never_overwritten(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            path = os.path.join(temporary_dir, "settings.json")
+            future = {
+                "format": "oder-state", "kind": "settings", "schema_version": 999,
+                "written_by": "9.0.0", "data": {"theme": "future"},
+            }
+            save_json(path, future)
+            with self.assertRaises(StateVersionError):
+                load_document(path, "settings", {}, dict)
+            with self.assertRaises(StateVersionError):
+                save_document(path, "settings", {"theme": "dark"}, dict)
+            with open(path, "r", encoding="utf-8") as handle:
+                self.assertEqual(json.load(handle), future)
+
     def test_corrupt_primary_is_restored_from_last_known_good_backup(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
             path = os.path.join(temporary_dir, "state.json")

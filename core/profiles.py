@@ -5,6 +5,7 @@ import uuid
 
 from core.paths import profiles_index_path, profile_dir, profile_cache_path
 from core.persistence import load_json, save_json
+from core.state_schema import load_document, save_document
 
 _lock = threading.RLock()
 
@@ -44,11 +45,11 @@ def _normalize_profiles(values):
 
 def _load_profiles_unlocked():
     p = profiles_index_path()
-    return _normalize_profiles(load_json(p, [], list))
+    return _normalize_profiles(load_document(p, "profiles", [], list))
 
 
 def _save_profiles_unlocked(profiles):
-    save_json(profiles_index_path(), profiles)
+    save_document(profiles_index_path(), "profiles", profiles, list)
 
 
 def load_profiles():

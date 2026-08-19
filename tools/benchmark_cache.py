@@ -31,7 +31,11 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix="oder-benchmark-") as temp_dir:
         original_path = cache.profile_cache_db_path
+        original_checkpoint_path = cache.profile_cache_checkpoint_path
         cache.profile_cache_db_path = lambda _profile_id: os.path.join(temp_dir, "cache.sqlite3")
+        cache.profile_cache_checkpoint_path = (
+            lambda _profile_id: os.path.join(temp_dir, "cache.full-update-backup.sqlite3")
+        )
         cache._SCHEMA_READY.discard(profile_id)
         try:
             timed("initialize", lambda: cache.initialize(profile_id, base_url))
@@ -73,6 +77,7 @@ def main():
         finally:
             cache._SCHEMA_READY.discard(profile_id)
             cache.profile_cache_db_path = original_path
+            cache.profile_cache_checkpoint_path = original_checkpoint_path
 
 
 if __name__ == "__main__":

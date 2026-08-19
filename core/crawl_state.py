@@ -2,7 +2,7 @@
 from datetime import datetime, timezone
 
 from core.paths import profile_crawl_state_path
-from core.persistence import load_json, save_json
+from core.state_schema import load_document, save_document
 
 
 def _now():
@@ -10,7 +10,7 @@ def _now():
 
 
 def load(profile_id):
-    return load_json(profile_crawl_state_path(profile_id), None, dict)
+    return load_document(profile_crawl_state_path(profile_id), "crawl-state", None, dict)
 
 
 def save(profile_id, **fields):
@@ -19,7 +19,7 @@ def save(profile_id, **fields):
     value["profile_id"] = profile_id
     value["updated_at"] = _now()
     path = profile_crawl_state_path(profile_id)
-    save_json(path, value)
+    save_document(path, "crawl-state", value, dict)
     return value
 
 

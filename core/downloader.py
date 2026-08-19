@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from core.paths import queue_path, downloads_dir
 from core.settings import load_settings, downloads_root
 from core.profiles import get_profile
-from core.persistence import load_json, save_json
+from core.state_schema import load_document, save_document
 from core import applog
 
 _file_lock = threading.RLock()
@@ -43,12 +43,12 @@ def is_paused():
 
 def load_queue():
     with _file_lock:
-        return load_json(queue_path(), [], list)
+        return load_document(queue_path(), "download-queue", [], list)
 
 
 def save_queue(items, *, backup=True):
     with _file_lock:
-        save_json(queue_path(), items, backup=backup)
+        save_document(queue_path(), "download-queue", items, list, backup=backup)
 
 
 def new_group(name):

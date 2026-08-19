@@ -1,5 +1,6 @@
 """Fail a release build when user-visible version metadata disagrees."""
 from pathlib import Path
+import os
 import re
 import sys
 
@@ -31,6 +32,13 @@ def verify_release_metadata(root=ROOT):
     changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
     if not re.search(rf"^## {re.escape(APP_VERSION)}(?:\s|—)", changelog, re.MULTILINE):
         errors.append("CHANGELOG.md has no section for the current application version")
+
+    ref_type = os.environ.get("GITHUB_REF_TYPE", "")
+    ref_name = os.environ.get("GITHUB_REF_NAME", "")
+    if ref_type == "tag" and ref_name != f"v{APP_VERSION}":
+        errors.append(
+            f"Git tag {ref_name!r} does not match the required release tag v{APP_VERSION}"
+        )
 
     if errors:
         raise RuntimeError("Release metadata check failed:\n- " + "\n- ".join(errors))

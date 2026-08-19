@@ -4,6 +4,19 @@ Notable changes to ODeR are recorded here.
 
 ## Unreleased
 
+## 0.20.0 — 2026-08-20
+
+- Added versioned schema envelopes and explicit migrations for settings, profiles, the download queue, favorites, package history, and crawl state.
+- Added startup compatibility checks that migrate legacy state before background work begins and leave newer unsupported schemas untouched with a clear update-required message.
+- Made full directory refreshes all-or-nothing: a stopped, failed, or interrupted full crawl restores the last complete SQLite index instead of leaving a partly replaced cache.
+- Applied the same checkpoint protection to directory-hosted `.oder` replacements, including failures after the incoming cache has begun applying.
+- Added process-start recovery for full-update checkpoints left by a crash or forced shutdown.
+- Hardened HTML listing parsing for double-quoted, single-quoted, and unquoted links, nested labels, encoded names, table-based sizes, and unsafe parent, query, fragment, or cross-origin links.
+- Added representative Apache, nginx, Caddy, and simple-listing fixtures alongside migration, future-schema refusal, checkpoint, and hosted-rollback regression tests.
+- Added Linux and Windows continuous testing plus a real Windows portable build, embedded-version smoke check, and short-lived CI artifact.
+- Added canonical Git-tag validation to release metadata checks and published formal `.oder` version 1 and saved-data compatibility contracts.
+- Corrected backup-disabled state writes so high-frequency queue progress saves no longer create an unintended backup copy on every update.
+
 ## 0.19.0 — 2026-08-19
 
 - Made update version parsing tolerant of abbreviated GitHub tags such as `0.18` and `v0.18`, normalizing them to `0.18.0`.

@@ -60,11 +60,11 @@ Unsigned first releases may trigger a Windows SmartScreen warning. Do not descri
 ## Publish on GitHub
 
 1. Commit and push the exact source used for the binaries.
-2. Open **Releases**, choose **Draft a new release**, and create the tag matching the application version exactly, such as `v0.19.0`.
+2. Open **Releases**, choose **Draft a new release**, and create the tag matching the application version exactly, such as `v0.20.0`.
 3. Attach the four release assets listed above.
 4. Add release notes from `CHANGELOG.md` and save a draft.
 5. Download and re-test the draft assets, then publish the release.
 
 The in-app updater depends on the installer, portable ZIP, and checksum assets being present. GitHub currently normalizes the uploaded `ODeR Installer.exe` filename to `ODeR.Installer.exe`; the updater accepts both names. Keep `ODeR-Portable.zip` and `SHA256SUMS.txt` unchanged. Always upload the checksum file generated in the same build, and keep the installer `AppId` unchanged so Inno Setup treats future versions as upgrades.
 
-Always publish tags as `vMAJOR.MINOR.PATCH` (for example, `v0.19.0`), not `0.19` or `v0.19`. ODeR 0.19 and newer tolerate abbreviated tags, but older installed versions require all three numeric parts. A canonical 0.19.0 tag therefore allows users on 0.16.x, 0.17.x, and 0.18.x to update directly without installing intermediate releases.
+Always publish tags as `vMAJOR.MINOR.PATCH` (for example, `v0.20.0`), not `0.20` or `v0.20`. ODeR 0.19 and newer tolerate abbreviated tags, but older installed versions require all three numeric parts. A canonical 0.20.0 tag therefore allows users on 0.16.x, 0.17.x, 0.18.x, and 0.19.x to update directly without installing intermediate releases.

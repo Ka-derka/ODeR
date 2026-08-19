@@ -6,6 +6,10 @@ from PySide6.QtGui import QIcon
 from PySide6.QtCore import QTimer
 
 from core.paths import resource_path
+from core import crawl_state, downloader, library
+from core.profiles import load_profiles
+from core.settings import load_settings
+from core.state_schema import StateSchemaError
 from core.version import APP_VERSION
 from gui.main_window import MainWindow
 from gui.tray import setup_tray
@@ -33,7 +37,23 @@ def main():
     if os.path.exists(icon_path):
         app.setWindowIcon(QIcon(icon_path))
 
-    window = MainWindow()
+    try:
+        load_settings()
+        startup_profiles = load_profiles()
+        downloader.load_queue()
+        library.favorites()
+        library.recent_packages(1)
+        for profile in startup_profiles:
+            crawl_state.load(profile.get("id"))
+        window = MainWindow()
+    except StateSchemaError as exc:
+        QMessageBox.critical(
+            None,
+            "ODeR data needs a newer version",
+            f"ODeR did not change your saved data.\n\n{exc}",
+        )
+        instance.close()
+        return 2
     instance.message_received.connect(window.handle_external_message)
     for pending_message in instance.set_ready():
         window.handle_external_message(pending_message)
