@@ -1,5 +1,6 @@
 import os
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -54,6 +55,11 @@ class CacheFeatureTests(unittest.TestCase):
         self.assertIsNone(cache.get_node(self.profile_id, self.base + "photos/holiday.jpg"))
         self.assertEqual(cache.count_nodes(self.profile_id), 2)
 
+    def test_folder_write_marks_parent_crawled_in_same_transaction(self):
+        cache.mark_crawled(self.profile_id, self.base, False)
+        cache.replace_children(self.profile_id, self.base, [])
+        self.assertTrue(cache.get_node(self.profile_id, self.base)["crawled"])
+
     def test_snapshot_records_new_removed_and_changed(self):
         run_id = cache.begin_snapshot(self.profile_id, "incremental", self.base)
         cache.replace_children(self.profile_id, self.base, [
@@ -67,6 +73,76 @@ class CacheFeatureTests(unittest.TestCase):
         self.assertEqual(result["changed_count"], 1)
         types = {row["change_type"] for row in cache.snapshot_changes(self.profile_id, run_id)}
         self.assertEqual(types, {"new", "removed", "changed"})
+
+    def test_single_folder_snapshot_does_not_copy_or_compare_descendants(self):
+        run_id = cache.begin_snapshot(self.profile_id, "folder", self.base)
+        cache.replace_children(self.profile_id, self.base + "photos/", [
+            (self.base + "photos/holiday.jpg", "holiday.jpg", 0, "9 MB", self.base + "photos/", 0),
+        ])
+        result = cache.finish_snapshot(self.profile_id, run_id)
+        self.assertEqual(result["changed_count"], 0)
+        self.assertEqual(result["before_count"], 3)
+
+    def test_grow_snapshot_is_limited_to_two_visible_levels(self):
+        album = self.base + "photos/album/"
+        cache.replace_children(self.profile_id, self.base + "photos/", [
+            (self.base + "photos/holiday.jpg", "holiday.jpg", 0, "3 MB", self.base + "photos/", 0),
+            (album, "album", 1, None, self.base + "photos/", 1),
+        ])
+        cache.replace_children(self.profile_id, album, [
+            (album + "deep.jpg", "deep.jpg", 0, "4 MB", album, 0),
+        ])
+        run_id = cache.begin_snapshot(self.profile_id, "grow", self.base)
+        result = cache.finish_snapshot(self.profile_id, run_id)
+        # Three direct root entries plus the two children of its direct folder.
+        # The deeper album child is outside a one-level grow operation.
+        self.assertEqual(result["before_count"], 5)
+        self.assertEqual(result["after_count"], 5)
+
+    def test_database_records_schema_version(self):
+        with cache._reader(self.profile_id) as conn:
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], cache.SCHEMA_VERSION)
+            self.assertEqual(
+                conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],
+                str(cache.SCHEMA_VERSION),
+            )
+
+    def test_bulk_replace_rebuilds_search_and_live_triggers(self):
+        cache.replace_all_nodes(self.profile_id, self.base, [
+            (self.base + "archive/", "archive", 1, None, self.base, 1),
+            (self.base + "archive/alpha.txt", "alpha.txt", 0, "1 KB", self.base + "archive/", 0),
+        ])
+        self.assertEqual([row["name"] for row in cache.search(self.profile_id, "alpha")], ["alpha.txt"])
+        cache.upsert_nodes(self.profile_id, [
+            (self.base + "archive/beta.txt", "beta.txt", 0, "2 KB", self.base + "archive/", 0),
+        ])
+        self.assertEqual([row["name"] for row in cache.search(self.profile_id, "beta")], ["beta.txt"])
+
+    def test_wal_reader_does_not_wait_for_python_writer_lock(self):
+        writer_ready = threading.Event()
+        release_writer = threading.Event()
+        read_finished = threading.Event()
+
+        def hold_writer_lock():
+            with cache._lock(self.profile_id):
+                writer_ready.set()
+                release_writer.wait(2)
+
+        def read_count():
+            cache.count_nodes(self.profile_id)
+            read_finished.set()
+
+        holder = threading.Thread(target=hold_writer_lock)
+        holder.start()
+        self.assertTrue(writer_ready.wait(1))
+        reader = threading.Thread(target=read_count)
+        reader.start()
+        try:
+            self.assertTrue(read_finished.wait(0.5), "WAL reader waited on the in-process writer lock")
+        finally:
+            release_writer.set()
+            holder.join(2)
+            reader.join(2)
 
     def test_full_and_incremental_pending_markers(self):
         cache.mark_crawled(self.profile_id, self.base, True)

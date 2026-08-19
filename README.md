@@ -4,7 +4,7 @@
 
 ODeR is a PySide6 desktop application for indexing web directory listings, browsing the cached tree offline, tracking changes, and downloading selected files. Each directory keeps its own crawl and download settings, while the local SQLite index remains fast enough for large archives.
 
-Current version: **0.16.2**
+Current version: **0.17.0**
 
 ## Highlights
 
@@ -20,6 +20,7 @@ Current version: **0.16.2**
 - Choose Graphite, Midnight, Light, OLED Black, or a custom color palette.
 - Check stable or preview GitHub releases in-app and download verified updates.
 - Keep one ODeR instance per Windows user and forward `.oder` files to the running window.
+- Keep browsing, Home, Activity, and Downloads responsive while large indexes are updated.
 
 ## Requirements
 
@@ -50,7 +51,7 @@ python -m compileall -q core gui main.py
 python -m unittest discover -s tests -v
 ```
 
-The repository includes tests for cache paging and search, snapshots, crawl recovery, grouped downloads, favorites, `.oder` validation, subtree exports, conflict handling, package comparison, update selection, and verified update downloads.
+The repository includes tests for cache paging and search, snapshots, crawl recovery, concurrent WAL reads, stable live UI updates, grouped downloads, favorites, `.oder` validation, subtree exports, conflict handling, package comparison, update selection, and verified update downloads. A configurable 100,000-entry cache benchmark is available at `tools/benchmark_cache.py`.
 
 ## Build for Windows
 

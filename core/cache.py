@@ -13,6 +13,7 @@ import shutil
 import sqlite3
 import threading
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
 
@@ -22,6 +23,7 @@ _LOCKS: dict[str, threading.RLock] = {}
 _LOCKS_GUARD = threading.Lock()
 _SCHEMA_READY: set[str] = set()
 _SCHEMA_GUARD = threading.Lock()
+SCHEMA_VERSION = 1
 
 
 def _lock(profile_id: str) -> threading.RLock:
@@ -32,11 +34,15 @@ def _lock(profile_id: str) -> threading.RLock:
 def _connect(profile_id: str) -> sqlite3.Connection:
     conn = sqlite3.connect(profile_cache_db_path(profile_id), timeout=30)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA temp_store=MEMORY")
     with _SCHEMA_GUARD:
         if profile_id not in _SCHEMA_READY:
+            # WAL is persistent, so negotiating it once per database/process is
+            # enough. Doing this for every short-lived reader can momentarily
+            # require a write lock and stall browsing during a crawl.
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute(
                 """CREATE TABLE IF NOT EXISTS meta (
                     key TEXT PRIMARY KEY,
@@ -63,6 +69,10 @@ def _connect(profile_id: str) -> sqlite3.Connection:
                 if name not in columns:
                     conn.execute(f"ALTER TABLE nodes ADD COLUMN {name} {declaration}")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_parent ON nodes(parent_url, name COLLATE NOCASE)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_nodes_parent_kind_name "
+                "ON nodes(parent_url, is_dir DESC, name COLLATE NOCASE)"
+            )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_name ON nodes(name COLLATE NOCASE)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_crawled_dir ON nodes(is_dir, crawled)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_last_scanned ON nodes(is_dir, last_scanned)")
@@ -130,9 +140,24 @@ def _connect(profile_id: str) -> sqlite3.Connection:
                 conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('fts_available','1')")
             except sqlite3.OperationalError:
                 conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('fts_available','0')")
+            conn.execute(
+                "INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)",
+                (str(SCHEMA_VERSION),),
+            )
+            conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             conn.commit()
             _SCHEMA_READY.add(profile_id)
     return conn
+
+
+@contextmanager
+def _reader(profile_id: str):
+    """Open an independent WAL reader without waiting on the Python writer lock."""
+    conn = _connect(profile_id)
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def _now_iso() -> str:
@@ -250,8 +275,12 @@ def upsert_nodes(profile_id: str, rows) -> None:
             conn.close()
 
 
-def replace_children(profile_id: str, parent_url: str, rows) -> dict:
-    """Replace one folder listing and remove entries no longer advertised."""
+def replace_children(profile_id: str, parent_url: str, rows, mark_parent_crawled: bool = True) -> dict:
+    """Replace one folder listing in a single transaction.
+
+    Marking the parent as crawled here avoids opening a second connection and
+    committing a second transaction for every directory request.
+    """
     now = _now_iso()
     prepared = [tuple(row[:6]) + (_parse_size_bytes(row[3]), now) for row in rows]
     with _lock(profile_id):
@@ -289,6 +318,11 @@ def replace_children(profile_id: str, parent_url: str, rows) -> dict:
                    DELETE FROM nodes WHERE url IN (SELECT url FROM doomed)""",
                 (parent_url,),
             )
+            if mark_parent_crawled:
+                conn.execute(
+                    "UPDATE nodes SET crawled=1, last_scanned=? WHERE url=?",
+                    (now, parent_url),
+                )
             conn.execute("DROP TABLE temp.seen_urls")
             conn.commit()
             return {"before": int(before), "after": len(prepared), "removed_roots": int(removed)}
@@ -297,11 +331,28 @@ def replace_children(profile_id: str, parent_url: str, rows) -> dict:
 
 
 def replace_all_nodes(profile_id: str, base_url: str, rows) -> None:
+    """Replace a complete index using a bulk-load transaction.
+
+    Maintaining every secondary/FTS index row-by-row is much slower than
+    rebuilding those indexes once after a large imported listing is written.
+    """
     now = _now_iso()
     with _lock(profile_id):
         conn = _connect(profile_id)
         try:
+            fts = conn.execute("SELECT value FROM meta WHERE key='fts_available'").fetchone()
+            fts_enabled = bool(fts and fts[0] == "1")
+            conn.execute("BEGIN IMMEDIATE")
+            if fts_enabled:
+                for trigger_name in ("nodes_fts_insert", "nodes_fts_delete", "nodes_fts_update"):
+                    conn.execute(f"DROP TRIGGER IF EXISTS {trigger_name}")
+                conn.execute("DELETE FROM nodes_fts")
             conn.execute("DELETE FROM nodes")
+            for index_name in (
+                "idx_nodes_parent", "idx_nodes_parent_kind_name", "idx_nodes_name",
+                "idx_nodes_crawled_dir", "idx_nodes_last_scanned", "idx_nodes_size_bytes",
+            ):
+                conn.execute(f"DROP INDEX IF EXISTS {index_name}")
             batch = []
             for row in rows:
                 batch.append(tuple(row[:6]) + (_parse_size_bytes(row[3]), now))
@@ -322,7 +373,34 @@ def replace_all_nodes(profile_id: str, base_url: str, rows) -> None:
                 "VALUES(?,?,?,?,?,?,?,?)", (base_url, "/", 1, None, None, 1, None, now),
             )
             conn.execute("UPDATE nodes SET last_scanned=? WHERE is_dir=1", (now,))
+            conn.execute("CREATE INDEX idx_nodes_parent ON nodes(parent_url, name COLLATE NOCASE)")
+            conn.execute(
+                "CREATE INDEX idx_nodes_parent_kind_name "
+                "ON nodes(parent_url, is_dir DESC, name COLLATE NOCASE)"
+            )
+            conn.execute("CREATE INDEX idx_nodes_name ON nodes(name COLLATE NOCASE)")
+            conn.execute("CREATE INDEX idx_nodes_crawled_dir ON nodes(is_dir, crawled)")
+            conn.execute("CREATE INDEX idx_nodes_last_scanned ON nodes(is_dir, last_scanned)")
+            conn.execute("CREATE INDEX idx_nodes_size_bytes ON nodes(is_dir, size_bytes)")
+            if fts_enabled:
+                conn.execute("INSERT INTO nodes_fts(url,name) SELECT url,name FROM nodes")
+                conn.execute(
+                    "CREATE TRIGGER nodes_fts_insert AFTER INSERT ON nodes BEGIN "
+                    "INSERT INTO nodes_fts(url,name) VALUES(new.url,new.name); END"
+                )
+                conn.execute(
+                    "CREATE TRIGGER nodes_fts_delete AFTER DELETE ON nodes BEGIN "
+                    "DELETE FROM nodes_fts WHERE url=old.url; END"
+                )
+                conn.execute(
+                    "CREATE TRIGGER nodes_fts_update AFTER UPDATE OF url,name ON nodes BEGIN "
+                    "DELETE FROM nodes_fts WHERE url=old.url; "
+                    "INSERT INTO nodes_fts(url,name) VALUES(new.url,new.name); END"
+                )
             conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
@@ -342,49 +420,33 @@ def mark_crawled(profile_id: str, url: str, crawled: bool = True) -> None:
 
 
 def pending_dirs(profile_id: str):
-    with _lock(profile_id):
-        conn = _connect(profile_id)
-        try:
-            rows = conn.execute("SELECT url FROM nodes WHERE is_dir=1 AND crawled=0").fetchall()
-            return [r[0] for r in rows]
-        finally:
-            conn.close()
+    with _reader(profile_id) as conn:
+        rows = conn.execute("SELECT url FROM nodes WHERE is_dir=1 AND crawled=0").fetchall()
+        return [r[0] for r in rows]
 
 def get_base_url(profile_id: str) -> str | None:
-    with _lock(profile_id):
-        conn = _connect(profile_id)
-        try:
-            row = conn.execute("SELECT value FROM meta WHERE key='base_url'").fetchone()
-            return row[0] if row else None
-        finally:
-            conn.close()
+    with _reader(profile_id) as conn:
+        row = conn.execute("SELECT value FROM meta WHERE key='base_url'").fetchone()
+        return row[0] if row else None
 
 
 def get_node(profile_id: str, url: str):
-    with _lock(profile_id):
-        conn = _connect(profile_id)
-        try:
-            row = conn.execute("SELECT url,name,is_dir,size,parent_url,crawled FROM nodes WHERE url=?", (url,)).fetchone()
-            return dict(row) if row else None
-        finally:
-            conn.close()
+    with _reader(profile_id) as conn:
+        row = conn.execute("SELECT url,name,is_dir,size,parent_url,crawled FROM nodes WHERE url=?", (url,)).fetchone()
+        return dict(row) if row else None
 
 
 
 def child_count(profile_id: str, parent_url: str, filter_text: str = ""):
-    with _lock(profile_id):
-        conn = _connect(profile_id)
-        try:
-            if filter_text:
-                row = conn.execute(
-                    "SELECT COUNT(*) AS total FROM nodes WHERE parent_url=? AND name LIKE ? COLLATE NOCASE",
-                    (parent_url, f"%{filter_text}%"),
-                ).fetchone()
-            else:
-                row = conn.execute("SELECT COUNT(*) AS total FROM nodes WHERE parent_url=?", (parent_url,)).fetchone()
-            return int(row["total"])
-        finally:
-            conn.close()
+    with _reader(profile_id) as conn:
+        if filter_text:
+            row = conn.execute(
+                "SELECT COUNT(*) AS total FROM nodes WHERE parent_url=? AND name LIKE ? COLLATE NOCASE",
+                (parent_url, f"%{filter_text}%"),
+            ).fetchone()
+        else:
+            row = conn.execute("SELECT COUNT(*) AS total FROM nodes WHERE parent_url=?", (parent_url,)).fetchone()
+        return int(row["total"])
 
 def get_children(profile_id: str, parent_url: str, filter_text: str = "", sort_mode: str = "name",
                  limit: int = 500, offset: int = 0):
@@ -399,17 +461,13 @@ def get_children(profile_id: str, parent_url: str, filter_text: str = "", sort_m
     if filter_text:
         where += " AND name LIKE ? COLLATE NOCASE"
         params.append(f"%{filter_text}%")
-    with _lock(profile_id):
-        conn = _connect(profile_id)
-        try:
-            rows = conn.execute(
-                f"SELECT url,name,is_dir,size,parent_url,crawled,size_bytes,last_seen,last_scanned "
-                f"FROM nodes WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
-                params + [max(1, min(5000, int(limit))), max(0, int(offset))],
-            ).fetchall()
-            return [dict(r) for r in rows]
-        finally:
-            conn.close()
+    with _reader(profile_id) as conn:
+        rows = conn.execute(
+            f"SELECT url,name,is_dir,size,parent_url,crawled,size_bytes,last_seen,last_scanned "
+            f"FROM nodes WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
+            params + [max(1, min(5000, int(limit))), max(0, int(offset))],
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def _fts_query(query: str) -> str:
@@ -423,60 +481,59 @@ def search(profile_id: str, query: str, limit: int = 500, file_type: str = "all"
     q = query.strip()
     if not q:
         return []
-    with _lock(profile_id):
-        conn = _connect(profile_id)
-        try:
-            clauses = []
-            params = []
-            use_glob = "*" in q or "?" in q
-            fts_available = conn.execute("SELECT value FROM meta WHERE key='fts_available'").fetchone()
-            if fts_available and fts_available[0] == "1" and not use_glob:
-                source = "nodes n JOIN nodes_fts f ON f.url=n.url"
-                clauses.append("f.name MATCH ?")
-                params.append(_fts_query(q))
+    with _reader(profile_id) as conn:
+        clauses = []
+        params = []
+        use_glob = "*" in q or "?" in q
+        fts_available = conn.execute("SELECT value FROM meta WHERE key='fts_available'").fetchone()
+        if fts_available and fts_available[0] == "1" and not use_glob:
+            source = "nodes n JOIN nodes_fts f ON f.url=n.url"
+            clauses.append("f.name MATCH ?")
+            params.append(_fts_query(q))
+        else:
+            source = "nodes n"
+            pattern = q.replace("%", "\\%").replace("_", "\\_")
+            if use_glob:
+                pattern = pattern.replace("*", "%").replace("?", "_")
             else:
-                source = "nodes n"
-                pattern = q.replace("%", "\\%").replace("_", "\\_")
-                if use_glob:
-                    pattern = pattern.replace("*", "%").replace("?", "_")
-                else:
-                    pattern = f"%{pattern}%"
-                clauses.append("n.name LIKE ? ESCAPE '\\' COLLATE NOCASE")
-                params.append(pattern)
-            if include_files and not include_dirs:
-                clauses.append("n.is_dir=0")
-            elif include_dirs and not include_files:
-                clauses.append("n.is_dir=1")
-            elif not include_files and not include_dirs:
-                return []
-            extension_groups = {
-                "archive": (".zip", ".7z", ".rar", ".tar", ".gz", ".bz2", ".xz"),
-                "image": (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"),
-                "video": (".mp4", ".mkv", ".avi", ".mov", ".webm"),
-                "audio": (".mp3", ".flac", ".wav", ".ogg", ".m4a"),
-                "document": (".pdf", ".txt", ".doc", ".docx", ".odt", ".md"),
-                "application": (".exe", ".msi", ".deb", ".rpm", ".appimage"),
-                "disk": (".iso", ".img", ".vhd", ".vhdx"),
-            }
-            extensions = extension_groups.get(file_type)
-            if extensions:
-                clauses.append("(" + " OR ".join("LOWER(n.name) LIKE ?" for _ in extensions) + ")")
-                params.extend(f"%{ext}" for ext in extensions)
-            if min_size is not None:
-                clauses.append("n.size_bytes>=?")
-                params.append(int(min_size))
-            if max_size is not None:
-                clauses.append("n.size_bytes<=?")
-                params.append(int(max_size))
-            params.append(max(1, min(5000, int(limit))))
-            rows = conn.execute(
-                f"SELECT n.url,n.name,n.is_dir,n.size,n.size_bytes,n.parent_url FROM {source} "
-                f"WHERE {' AND '.join(clauses)} ORDER BY n.is_dir DESC, n.name COLLATE NOCASE LIMIT ?",
-                params,
-            ).fetchall()
-            return [dict(r) for r in rows]
-        finally:
-            conn.close()
+                pattern = f"%{pattern}%"
+            clauses.append("n.name LIKE ? ESCAPE '\\' COLLATE NOCASE")
+            params.append(pattern)
+        if include_files and not include_dirs:
+            clauses.append("n.is_dir=0")
+        elif include_dirs and not include_files:
+            clauses.append("n.is_dir=1")
+        elif not include_files and not include_dirs:
+            return []
+        extension_groups = {
+            "archive": (".zip", ".7z", ".rar", ".tar", ".gz", ".bz2", ".xz"),
+            "image": (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"),
+            "video": (".mp4", ".mkv", ".avi", ".mov", ".webm"),
+            "audio": (".mp3", ".flac", ".wav", ".ogg", ".m4a"),
+            "document": (".pdf", ".txt", ".doc", ".docx", ".odt", ".md"),
+            "application": (".exe", ".msi", ".deb", ".rpm", ".appimage"),
+            "disk": (".iso", ".img", ".vhd", ".vhdx"),
+        }
+        extensions = extension_groups.get(file_type)
+        if extensions:
+            clauses.append("(" + " OR ".join("LOWER(n.name) LIKE ?" for _ in extensions) + ")")
+            params.extend(f"%{ext}" for ext in extensions)
+        if min_size is not None:
+            clauses.append("n.size_bytes>=?")
+            params.append(int(min_size))
+        if max_size is not None:
+            clauses.append("n.size_bytes<=?")
+            params.append(int(max_size))
+        params.append(max(1, min(5000, int(limit))))
+        rows = conn.execute(
+            f"WITH matches AS MATERIALIZED ("
+            f"SELECT n.url,n.name,n.is_dir,n.size,n.size_bytes,n.parent_url FROM {source} "
+            f"WHERE {' AND '.join(clauses)} LIMIT ?) "
+            f"SELECT url,name,is_dir,size,size_bytes,parent_url FROM matches "
+            f"ORDER BY is_dir DESC, name COLLATE NOCASE",
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def search_all(profiles, query: str, limit_per_profile: int = 500, **filters):
@@ -494,63 +551,59 @@ def search_all(profiles, query: str, limit_per_profile: int = 500, **filters):
 
 
 def count_nodes(profile_id: str):
-    with _lock(profile_id):
-        conn = _connect(profile_id)
-        try:
-            row = conn.execute("SELECT COUNT(*) AS total FROM nodes").fetchone()
-            return int(row["total"])
-        finally:
-            conn.close()
+    with _reader(profile_id) as conn:
+        row = conn.execute("SELECT COUNT(*) AS total FROM nodes").fetchone()
+        return int(row["total"])
+
+
+def count_summary(profile_id: str) -> dict:
+    """Return entry, folder, and file totals with one indexed database read."""
+    with _reader(profile_id) as conn:
+        row = conn.execute(
+            """SELECT COUNT(*) AS entries,
+                      SUM(CASE WHEN is_dir=1 THEN 1 ELSE 0 END) AS folders,
+                      SUM(CASE WHEN is_dir=0 THEN 1 ELSE 0 END) AS files
+               FROM nodes"""
+        ).fetchone()
+        return {
+            "entries": int(row["entries"] or 0),
+            "folders": int(row["folders"] or 0),
+            "files": int(row["files"] or 0),
+        }
 
 
 def count_dirs(profile_id: str):
-    with _lock(profile_id):
-        conn = _connect(profile_id)
-        try:
-            row = conn.execute("SELECT COUNT(*) AS total FROM nodes WHERE is_dir=1").fetchone()
-            return int(row["total"])
-        finally:
-            conn.close()
+    with _reader(profile_id) as conn:
+        row = conn.execute("SELECT COUNT(*) AS total FROM nodes WHERE is_dir=1").fetchone()
+        return int(row["total"])
 
 
 def count_crawled_dirs(profile_id: str):
-    with _lock(profile_id):
-        conn = _connect(profile_id)
-        try:
-            row = conn.execute("SELECT COUNT(*) AS total FROM nodes WHERE is_dir=1 AND crawled=1").fetchone()
-            return int(row["total"])
-        finally:
-            conn.close()
+    with _reader(profile_id) as conn:
+        row = conn.execute("SELECT COUNT(*) AS total FROM nodes WHERE is_dir=1 AND crawled=1").fetchone()
+        return int(row["total"])
 
 
 def count_files(profile_id: str):
-    with _lock(profile_id):
-        conn = _connect(profile_id)
-        try:
-            row = conn.execute("SELECT COUNT(*) AS total FROM nodes WHERE is_dir=0").fetchone()
-            return int(row["total"])
-        finally:
-            conn.close()
+    with _reader(profile_id) as conn:
+        row = conn.execute("SELECT COUNT(*) AS total FROM nodes WHERE is_dir=0").fetchone()
+        return int(row["total"])
 
 
 def descendant_files(profile_id: str, folder_url: str):
-    with _lock(profile_id):
-        conn = _connect(profile_id)
-        try:
-            rows = conn.execute(
-                """WITH RECURSIVE tree(url) AS (
-                       SELECT url FROM nodes WHERE url=?
-                       UNION ALL
-                       SELECT n.url FROM nodes n JOIN tree t ON n.parent_url=t.url
-                   )
-                   SELECT url,name,parent_url FROM nodes
-                   WHERE is_dir=0 AND url IN (SELECT url FROM tree)
-                   ORDER BY parent_url, name COLLATE NOCASE""",
-                (folder_url,),
-            ).fetchall()
-            return [dict(r) for r in rows]
-        finally:
-            conn.close()
+    with _reader(profile_id) as conn:
+        rows = conn.execute(
+            """WITH RECURSIVE tree(url) AS (
+                   SELECT url FROM nodes WHERE url=?
+                   UNION ALL
+                   SELECT n.url FROM nodes n JOIN tree t ON n.parent_url=t.url
+               )
+               SELECT url,name,parent_url FROM nodes
+               WHERE is_dir=0 AND url IN (SELECT url FROM tree)
+               ORDER BY parent_url, name COLLATE NOCASE""",
+            (folder_url,),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def mark_all_dirs_pending(profile_id: str) -> int:
@@ -590,7 +643,21 @@ def begin_snapshot(profile_id: str, mode: str, root_url: str | None = None) -> s
     with _lock(profile_id):
         conn = _connect(profile_id)
         try:
-            if root_url:
+            if root_url and mode == "folder":
+                # A single-folder refresh only changes its direct listing.
+                # Copying the entire cached subtree made the action appear to
+                # hang before its first request on large libraries.
+                scope = "parent_url=?"
+                params = (root_url,)
+            elif root_url and mode == "grow":
+                # Grow fetches the requested folder and each immediate child
+                # directory, so only those two visible levels can change.
+                scope = (
+                    "(parent_url=? OR parent_url IN "
+                    "(SELECT url FROM nodes WHERE parent_url=? AND is_dir=1))"
+                )
+                params = (root_url, root_url)
+            elif root_url:
                 scope = "substr(url,1,length(?))=?"
                 params = (root_url, root_url)
             else:
@@ -620,7 +687,16 @@ def finish_snapshot(profile_id: str, run_id: str, status: str = "completed", cha
             if not run:
                 return {"id": run_id, "new_count": 0, "removed_count": 0, "changed_count": 0}
             root_url = run["root_url"]
-            if root_url:
+            if root_url and run["mode"] == "folder":
+                current_scope = "n.parent_url=?"
+                scope_params = (root_url,)
+            elif root_url and run["mode"] == "grow":
+                current_scope = (
+                    "(n.parent_url=? OR n.parent_url IN "
+                    "(SELECT d.url FROM nodes d WHERE d.parent_url=? AND d.is_dir=1))"
+                )
+                scope_params = (root_url, root_url)
+            elif root_url:
                 current_scope = "substr(n.url,1,length(?))=?"
                 scope_params = (root_url, root_url)
             else:
@@ -673,7 +749,17 @@ def finish_snapshot(profile_id: str, run_id: str, status: str = "completed", cha
                     (run_id, run_id, remaining),
                 )
             recorded = conn.execute("SELECT COUNT(*) FROM changes WHERE run_id=?", (run_id,)).fetchone()[0]
-            if root_url:
+            if root_url and run["mode"] == "folder":
+                after = conn.execute(
+                    "SELECT COUNT(*) FROM nodes WHERE parent_url=?", (root_url,)
+                ).fetchone()[0]
+            elif root_url and run["mode"] == "grow":
+                after = conn.execute(
+                    "SELECT COUNT(*) FROM nodes WHERE parent_url=? OR parent_url IN "
+                    "(SELECT url FROM nodes WHERE parent_url=? AND is_dir=1)",
+                    (root_url, root_url),
+                ).fetchone()[0]
+            elif root_url:
                 after = conn.execute(
                     "SELECT COUNT(*) FROM nodes WHERE substr(url,1,length(?))=?", (root_url, root_url)
                 ).fetchone()[0]

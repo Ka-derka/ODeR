@@ -1,9 +1,10 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton, QLabel,
     QTreeWidget, QTreeWidgetItem, QToolButton, QHeaderView, QFrame,
-    QMenu, QApplication, QStyle, QComboBox, QSizePolicy
+    QMenu, QApplication, QStyle, QComboBox, QStyledItemDelegate,
+    QStyleOptionButton, QStyleOptionViewItem
 )
-from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtCore import Qt, Signal, QSize, QRect, QEvent
 from html import escape
 
 from core import cache, downloader, library
@@ -11,43 +12,84 @@ from core import applog
 from core.settings import load_settings
 
 
-class FileActionsWidget(QWidget):
-    """Right-aligned row actions that remain centered at every display scale."""
+class FileActionDelegate(QStyledItemDelegate):
+    """Paint lightweight file actions without creating widgets for every row."""
 
     BUTTON_WIDTH = 76
     BUTTON_HEIGHT = 24
     BUTTON_GAP = 6
     RIGHT_INSET = 8
+    download_requested = Signal(str, str)
+    copy_requested = Signal(str)
 
-    def __init__(self, download_callback, copy_callback, parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.setMinimumWidth(self.BUTTON_WIDTH * 2 + self.BUTTON_GAP + self.RIGHT_INSET)
+        viewport = parent.viewport() if parent is not None else None
+        self._download_style = QPushButton("Download", viewport)
+        self._copy_style = QPushButton("Copy link", viewport)
+        for button in (self._download_style, self._copy_style):
+            button.setObjectName("rowActionButton")
+            button.hide()
 
-        self.download_button = QPushButton("Download", self)
-        self.download_button.setObjectName("rowActionButton")
-        self.download_button.clicked.connect(lambda _checked=False: download_callback())
-
-        self.copy_button = QPushButton("Copy link", self)
-        self.copy_button.setObjectName("rowActionButton")
-        self.copy_button.setToolTip(
-            "Copy the direct URL — paste into a regular browser tab if a site's own "
-            "download protection (e.g. Cloudflare) blocks the app's download."
-        )
-        self.copy_button.clicked.connect(lambda _checked=False: copy_callback())
-
-    def resizeEvent(self, event):
-        total_width = self.BUTTON_WIDTH * 2 + self.BUTTON_GAP
-        left = max(0, self.width() - self.RIGHT_INSET - total_width)
-        top = max(0, (self.height() - self.BUTTON_HEIGHT) // 2)
-        self.download_button.setGeometry(left, top, self.BUTTON_WIDTH, self.BUTTON_HEIGHT)
-        self.copy_button.setGeometry(
-            left + self.BUTTON_WIDTH + self.BUTTON_GAP,
+    @classmethod
+    def button_rects(cls, cell_rect):
+        total_width = cls.BUTTON_WIDTH * 2 + cls.BUTTON_GAP
+        left = max(cell_rect.left(), cell_rect.right() - cls.RIGHT_INSET - total_width + 1)
+        top = cell_rect.top() + max(0, (cell_rect.height() - cls.BUTTON_HEIGHT) // 2)
+        download_rect = QRect(left, top, cls.BUTTON_WIDTH, cls.BUTTON_HEIGHT)
+        copy_rect = QRect(
+            left + cls.BUTTON_WIDTH + cls.BUTTON_GAP,
             top,
-            self.BUTTON_WIDTH,
-            self.BUTTON_HEIGHT,
+            cls.BUTTON_WIDTH,
+            cls.BUTTON_HEIGHT,
         )
-        super().resizeEvent(event)
+        return download_rect, copy_rect
+
+    @staticmethod
+    def _file_details(index):
+        source = index.sibling(index.row(), 0)
+        if bool(source.data(Qt.UserRole + 1)):
+            return None, None
+        return source.data(Qt.UserRole), source.data(Qt.DisplayRole)
+
+    def paint(self, painter, option, index):
+        base_option = QStyleOptionViewItem(option)
+        self.initStyleOption(base_option, index)
+        style = option.widget.style() if option.widget is not None else QApplication.style()
+        style.drawControl(QStyle.CE_ItemViewItem, base_option, painter, option.widget)
+        url, _name = self._file_details(index)
+        if not url:
+            return
+        for text, rect, template in zip(
+            ("Download", "Copy link"),
+            self.button_rects(option.rect),
+            (self._download_style, self._copy_style),
+        ):
+            button_option = QStyleOptionButton()
+            button_option.initFrom(template)
+            button_option.rect = rect
+            button_option.text = text
+            button_option.state |= QStyle.State_Enabled
+            template.style().drawControl(QStyle.CE_PushButton, button_option, painter, template)
+
+    def editorEvent(self, event, model, option, index):
+        if event.type() != QEvent.MouseButtonRelease or event.button() != Qt.LeftButton:
+            return False
+        url, name = self._file_details(index)
+        if not url:
+            return False
+        download_rect, copy_rect = self.button_rects(option.rect)
+        if download_rect.contains(event.position().toPoint()):
+            self.download_requested.emit(url, name or "download")
+            return True
+        if copy_rect.contains(event.position().toPoint()):
+            self.copy_requested.emit(url)
+            return True
+        return False
+
+    def sizeHint(self, option, index):
+        hint = super().sizeHint(option, index)
+        return QSize(max(hint.width(), 166), max(hint.height(), 37))
 
 
 class BrowserWidget(QWidget):
@@ -166,6 +208,10 @@ class BrowserWidget(QWidget):
         self.list_widget.itemSelectionChanged.connect(self._update_selection_state)
         self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
         self.list_widget.customContextMenuRequested.connect(self._context_menu)
+        self.action_delegate = FileActionDelegate(self.list_widget)
+        self.action_delegate.download_requested.connect(self._download)
+        self.action_delegate.copy_requested.connect(self._copy_link)
+        self.list_widget.setItemDelegateForColumn(3, self.action_delegate)
 
         nav_row = QHBoxLayout()
         nav_row.setSpacing(5)
@@ -329,16 +375,11 @@ class BrowserWidget(QWidget):
             kind = "Folder" if child["is_dir"] else self._file_type(child["name"])
             item = QTreeWidgetItem([child["name"], child.get("size") or "", kind, ""])
             item.setData(0, Qt.UserRole, url)
+            item.setData(0, Qt.UserRole + 1, bool(child["is_dir"]))
             item.setIcon(0, folder_icon if child["is_dir"] else file_icon)
             item.setSizeHint(0, QSize(0, 37))
             self.list_widget.addTopLevelItem(item)
             self._visible_urls.append(url)
-            if not child["is_dir"]:
-                actions = FileActionsWidget(
-                    lambda u=url, n=child["name"]: self._download(u, n),
-                    lambda u=url: self._copy_link(u),
-                )
-                self.list_widget.setItemWidget(item, 3, actions)
 
         shown = len(children)
         first = self.page_offset + 1 if shown else 0

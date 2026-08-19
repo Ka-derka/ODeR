@@ -4,6 +4,17 @@ Notable changes to ODeR are recorded here.
 
 ## Unreleased
 
+## 0.17.0 — 2026-08-19
+
+- Moved cache initialization and Home statistics into a background task so the window and site cards appear immediately.
+- Made crawl progress event-driven and throttled; Activity updates existing controls instead of rebuilding the page every second.
+- Began folder network requests before preparing change baselines and limited folder/grow snapshots to the levels they can actually change.
+- Combined each folder listing write and crawled-state update into one transaction, throttled aggregate counts, and added an index for the primary browse order.
+- Added explicit SQLite schema-version metadata, WAL readers that do not wait on the in-process writer lock, and a single-query cache summary.
+- Replaced per-file action widgets with a lightweight painted delegate, preserving correctly aligned Download and Copy link actions with far less UI overhead.
+- Updated Downloads rows and progress bars in place, removed repeated queue-file reads, and throttled download progress persistence.
+- Added regression coverage for responsive UI updates, concurrent cache reads, scoped snapshots, and schema metadata, plus a repeatable 100,000-entry cache benchmark.
+
 ## 0.16.2 — 2026-08-19
 
 - Corrected the remaining file-row button alignment problem at scaled display settings.

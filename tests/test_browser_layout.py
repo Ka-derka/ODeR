@@ -6,9 +6,12 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtWidgets import QApplication, QPushButton
+    from PySide6.QtCore import QRect, Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication
     from gui.browser_widget import BrowserWidget
     from gui.queue_widget import QueueWidget
+    from gui.main_window import ActivityPage, HomePage
     PYSIDE_AVAILABLE = True
 except ModuleNotFoundError:
     PYSIDE_AVAILABLE = False
@@ -47,19 +50,31 @@ class BrowserLayoutTests(unittest.TestCase):
             self.app.processEvents()
 
             item = widget.list_widget.topLevelItem(0)
-            actions = widget.list_widget.itemWidget(item, 3)
-            buttons = actions.findChildren(QPushButton)
-            self.assertEqual(len(buttons), 2)
-            self.assertEqual([button.height() for button in buttons], [24, 24])
-
             row_rect = widget.list_widget.visualItemRect(item)
-            self.assertEqual(actions.geometry().top(), row_rect.top())
-            self.assertEqual(actions.height(), row_rect.height())
-            top_gap = buttons[0].y()
-            bottom_gap = actions.height() - buttons[0].geometry().bottom() - 1
-            right_gap = actions.width() - buttons[-1].geometry().right() - 1
+            header = widget.list_widget.header()
+            cell_rect = QRect(
+                header.sectionViewportPosition(3),
+                row_rect.top(),
+                header.sectionSize(3),
+                row_rect.height(),
+            )
+            download_rect, copy_rect = widget.action_delegate.button_rects(cell_rect)
+            self.assertIsNone(widget.list_widget.itemWidget(item, 3))
+            self.assertEqual((download_rect.width(), download_rect.height()), (76, 24))
+            self.assertEqual((copy_rect.width(), copy_rect.height()), (76, 24))
+            top_gap = download_rect.top() - cell_rect.top()
+            bottom_gap = cell_rect.bottom() - download_rect.bottom()
+            right_gap = cell_rect.right() - copy_rect.right()
             self.assertLessEqual(abs(top_gap - bottom_gap), 1)
             self.assertGreaterEqual(right_gap, 8)
+
+            requested = []
+            widget.action_delegate.download_requested.connect(
+                lambda url, name: requested.append((url, name))
+            )
+            QTest.mouseClick(widget.list_widget.viewport(), Qt.LeftButton, pos=download_rect.center())
+            self.app.processEvents()
+            self.assertEqual(requested, [(child["url"], child["name"])])
             widget.close()
 
     def test_download_group_stays_expanded_after_refresh(self):
@@ -93,6 +108,80 @@ class BrowserLayoutTests(unittest.TestCase):
             self.app.processEvents()
             widget.refresh()
             self.assertTrue(widget.tree.topLevelItem(0).isExpanded())
+            widget.close()
+
+    def test_activity_updates_existing_widgets_in_place(self):
+        profile = {"id": "site-1", "name": "Example", "base_url": "https://example.test/", "crawl_history": []}
+        first = {"running": True, "phase": "preparing", "crawled": 0, "folders_discovered": 0}
+        second = {
+            "running": True,
+            "phase": "running",
+            "crawled": 12,
+            "folders_discovered": 20,
+            "files_discovered": 40,
+            "queued": 8,
+            "rate": 3.0,
+            "elapsed": 4.0,
+        }
+        with patch("gui.main_window.crawl_state.resumable", return_value=[]):
+            widget = ActivityPage()
+            widget.refresh([profile], {profile["id"]: first})
+            controls = widget._active_widgets[profile["id"]]
+            bar = controls["bar"]
+            info = controls["info"]
+            widget.refresh([profile], {profile["id"]: second})
+            self.assertIs(widget._active_widgets[profile["id"]]["bar"], bar)
+            self.assertIs(widget._active_widgets[profile["id"]]["info"], info)
+            self.assertEqual(bar.value(), 60)
+            self.assertIn("12", info.text())
+            widget.close()
+
+    def test_download_refresh_reads_queue_once_for_multiple_groups(self):
+        items = [
+            {"id": "a", "group_id": "g1", "group_name": "One", "profile_name": "Site", "name": "a", "status": "done", "bytes_done": 1, "bytes_total": 1},
+            {"id": "b", "group_id": "g2", "group_name": "Two", "profile_name": "Site", "name": "b", "status": "done", "bytes_done": 1, "bytes_total": 1},
+        ]
+        with patch("gui.queue_widget.downloader.load_queue", return_value=items) as load_queue:
+            widget = QueueWidget()
+            widget.refresh()
+            self.assertEqual(load_queue.call_count, 1)
+            widget.close()
+
+    def test_download_progress_updates_rows_without_rebuilding_tree(self):
+        first = {
+            "id": "download-1", "profile_name": "Example", "name": "file.bin",
+            "status": "downloading", "bytes_done": 10, "bytes_total": 100,
+        }
+        second = dict(first, bytes_done=65, speed_bps=1024)
+        with patch("gui.queue_widget.downloader.load_queue", side_effect=[[first], [second]]):
+            widget = QueueWidget()
+            widget.refresh()
+            row = widget.tree.topLevelItem(0)
+            bar = widget.tree.itemWidget(row, 3)
+            widget.refresh()
+            self.assertIs(widget.tree.topLevelItem(0), row)
+            self.assertIs(widget.tree.itemWidget(row, 3), bar)
+            self.assertEqual(bar.value(), 65)
+            widget.close()
+
+    def test_home_cards_do_not_read_databases_on_ui_refresh(self):
+        profile = {
+            "id": "site-1", "name": "Example", "base_url": "https://example.test/",
+            "last_crawled": None,
+        }
+        with (
+            patch("gui.main_window.cache.migrate_json_if_needed") as migrate,
+            patch("gui.main_window.cache.count_summary") as count,
+        ):
+            widget = HomePage()
+            widget.refresh([profile])
+            migrate.assert_not_called()
+            count.assert_not_called()
+            self.assertIn("loading", widget._meta_labels[profile["id"]].text().lower())
+            widget.update_profile_stats(
+                profile["id"], {"entries": 11, "folders": 3, "files": 8}, profile
+            )
+            self.assertIn("10 items", widget._meta_labels[profile["id"]].text())
             widget.close()
 
 

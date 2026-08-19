@@ -2,6 +2,7 @@ import csv
 import os
 import sys
 import threading
+import time
 import uuid
 from datetime import datetime
 
@@ -20,7 +21,7 @@ from core import cache, library, crawl_state, updater
 from core.crawl import crawl_profile, crawl_folder
 from core import downloader
 from core import applog
-from core.paths import data_dir, is_portable
+from core.paths import data_dir, is_portable, profile_cache_db_path
 from core.settings import load_settings, save_settings, downloads_root
 from core.oder_package import (
     compare_packages, export_directory, find_conflicts, import_directory, inspect_package,
@@ -229,6 +230,34 @@ class TabButton(QToolButton):
         super().mousePressEvent(event)
 
 
+class CacheStatsTask(QThread):
+    """Initialize saved caches and stream Home-page totals off the UI thread."""
+
+    stats_ready = Signal(str, object)
+    stats_failed = Signal(str, str)
+
+    def __init__(self, profiles, initialize_caches=True, parent=None):
+        super().__init__(parent)
+        self._profiles = [dict(profile) for profile in profiles]
+        self._initialize_caches = bool(initialize_caches)
+
+    def run(self):
+        for profile in self._profiles:
+            if self.isInterruptionRequested():
+                break
+            profile_id = profile["id"]
+            try:
+                if self._initialize_caches:
+                    cache.migrate_json_if_needed(profile_id, profile.get("base_url", ""))
+                    cache.initialize(profile_id, profile.get("base_url", ""))
+                elif not os.path.exists(profile_cache_db_path(profile_id)):
+                    self.stats_ready.emit(profile_id, {"entries": 0, "folders": 0, "files": 0})
+                    continue
+                self.stats_ready.emit(profile_id, cache.count_summary(profile_id))
+            except Exception as exc:
+                self.stats_failed.emit(profile_id, str(exc))
+
+
 class HomePage(QWidget):
     open_site_requested = Signal(str)
     export_site_requested = Signal(str)
@@ -287,6 +316,9 @@ class HomePage(QWidget):
         self.cards_grid.setSpacing(12)
         self.layout.addWidget(self.cards_wrap)
         self.layout.addStretch(1)
+        self._profiles = {}
+        self._meta_labels = {}
+        self._stats = {}
         self.refresh([])
 
     def show_update(self, info):
@@ -298,22 +330,45 @@ class HomePage(QWidget):
     def clear_update(self):
         self.update_banner.hide()
 
+    @staticmethod
+    def _meta_text(profile, counts):
+        if counts is None:
+            return f"Index statistics loading…  ·  {profile.get('last_crawled') or 'Not updated'}"
+        total_items = max(0, int(counts.get("entries", 0)) - 1)
+        folders = int(counts.get("folders", 0))
+        files = int(counts.get("files", 0))
+        status = "Cached ✓" if total_items > 0 else "No cache yet"
+        return (
+            f"{total_items:,} items  ·  {folders:,} folders  ·  {files:,} files  ·  "
+            f"{status}  ·  {profile.get('last_crawled') or 'Not updated'}"
+        )
+
+    def update_profile_stats(self, profile_id, counts, profile=None):
+        if counts is not None:
+            self._stats[profile_id] = dict(counts)
+        if profile is not None:
+            self._profiles[profile_id] = dict(profile)
+        label = self._meta_labels.get(profile_id)
+        current_profile = self._profiles.get(profile_id)
+        if label is not None and current_profile is not None:
+            label.setText(self._meta_text(current_profile, self._stats.get(profile_id)))
+
     def refresh(self, profiles):
         while self.cards_grid.count():
             item = self.cards_grid.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
+        self._profiles = {profile["id"]: dict(profile) for profile in profiles}
+        self._meta_labels = {}
+        live_ids = set(self._profiles)
+        self._stats = {profile_id: stats for profile_id, stats in self._stats.items()
+                       if profile_id in live_ids}
         if not profiles:
             empty = QLabel("No sites yet. Add a site to start building your offline library.")
             empty.setObjectName("mutedLabel")
             self.cards_grid.addWidget(empty, 0, 0)
             return
         for idx, profile in enumerate(profiles):
-            cache.migrate_json_if_needed(profile["id"], profile["base_url"])
-            total_items = cache.count_nodes(profile["id"]) - 1
-            folders = cache.count_dirs(profile["id"])
-            files = cache.count_files(profile["id"])
-            status = "Cached ✓" if total_items > 0 else "No cache yet"
             card = QFrame()
             card.setObjectName("card")
             layout = QVBoxLayout(card)
@@ -325,9 +380,10 @@ class HomePage(QWidget):
             url.setObjectName("cardMeta")
             url.setWordWrap(True)
             layout.addWidget(url)
-            meta = QLabel(f"{total_items:,} items  ·  {folders:,} folders  ·  {files:,} files  ·  {status}  ·  {profile.get('last_crawled') or 'Not updated'}")
+            meta = QLabel(self._meta_text(profile, self._stats.get(profile["id"])))
             meta.setObjectName("cardMeta")
             layout.addWidget(meta)
+            self._meta_labels[profile["id"]] = meta
             actions = QHBoxLayout()
             open_btn = QPushButton("Open tab")
             open_btn.clicked.connect(lambda _, pid=profile["id"]: self.open_site_requested.emit(pid))
@@ -731,6 +787,8 @@ class ActivityPage(QWidget):
         self.history.itemDoubleClicked.connect(self._open_history)
         self.layout.addWidget(self.history, 1)
         self._history_refs = []
+        self._active_widgets = {}
+        self._structure_signature = None
 
     def _clear_layout(self, layout):
         while layout.count():
@@ -755,10 +813,53 @@ class ActivityPage(QWidget):
             return "Calculating…"
         return ActivityPage._duration(seconds)
 
+    def _update_active_display(self, profile, st):
+        widgets = self._active_widgets.get(profile["id"])
+        if not widgets:
+            return
+        scanned = int(st.get("crawled", 0))
+        discovered = max(scanned, int(st.get("folders_discovered", 0)))
+        queued = max(0, int(st.get("queued", 0)))
+        rate = float(st.get("rate", 0.0))
+        elapsed = float(st.get("elapsed", 0.0))
+        coverage = int((scanned / discovered) * 100) if discovered else 0
+        preparing = st.get("phase") == "preparing"
+        widgets["bar"].setValue(coverage)
+        widgets["bar"].setFormat("Preparing update…" if preparing else f"{coverage}% of discovered folders")
+        remaining_eta = (queued / rate) if rate > 0 and queued > 0 else 0
+        current = st.get("current") or ("Preparing cache and network worker…" if preparing else "Finishing…")
+        if isinstance(current, str) and not preparing:
+            current = current.replace(profile.get("base_url", ""), "") or "/"
+        widgets["info"].setText(
+            f"Folders scanned: <b>{scanned:,}</b>  ·  Discovered: <b>{discovered:,}</b>  ·  "
+            f"Queued: <b>{queued:,}</b>  ·  Files found: <b>{int(st.get('files_discovered', 0)):,}</b><br>"
+            f"Requests: <b>{int(st.get('requests', 0)):,}</b>  ·  Speed: <b>{rate:.1f} folders/s</b>  ·  "
+            f"Workers: <b>{int(st.get('workers', 1))}</b>  ·  Elapsed: <b>{self._duration(elapsed)}</b>  ·  "
+            f"Queue ETA: <b>{self._eta(remaining_eta)}</b><br>"
+            f"Current: {current}"
+        )
+
     def refresh(self, profiles, statuses):
-        self._clear_layout(self.active_layout)
         active = [(p, statuses.get(p["id"], {})) for p in profiles if statuses.get(p["id"], {}).get("running")]
-        resumable_ids = {profile["id"] for profile, _state in crawl_state.resumable(profiles)}
+        resumable_pairs = crawl_state.resumable(profiles)
+        resumable_states = {profile["id"]: state for profile, state in resumable_pairs}
+        resumable_ids = set(resumable_states)
+        active_ids = {profile["id"] for profile, _status in active}
+        structure_signature = (
+            tuple(profile["id"] for profile, _status in active),
+            tuple(profile["id"] for profile in profiles
+                  if profile["id"] in resumable_ids and profile["id"] not in active_ids),
+        )
+        if structure_signature == self._structure_signature:
+            # The common progress path updates existing controls in place. The
+            # old implementation destroyed and recreated every card, button,
+            # progress bar, and history row once per second.
+            for profile, st in active:
+                self._update_active_display(profile, st)
+            return
+        self._structure_signature = structure_signature
+        self._clear_layout(self.active_layout)
+        self._active_widgets = {}
         if not active and not resumable_ids:
             empty = QLabel("No crawls are running right now.")
             empty.setObjectName("mutedLabel")
@@ -806,13 +907,14 @@ class ActivityPage(QWidget):
             )
             info.setWordWrap(True)
             cl.addWidget(info)
+            self._active_widgets[profile["id"]] = {"bar": bar, "info": info}
+            self._update_active_display(profile, st)
             self.active_layout.addWidget(card)
 
-        active_ids = {profile["id"] for profile, _status in active}
         for profile in profiles:
             if profile["id"] in active_ids or profile["id"] not in resumable_ids:
                 continue
-            state = crawl_state.load(profile["id"])
+            state = resumable_states.get(profile["id"]) or {}
             card = QFrame()
             card.setObjectName("card")
             row = QHBoxLayout(card)
@@ -1071,6 +1173,8 @@ class ChangesPage(QWidget):
 
 
 class MainWindow(QMainWindow):
+    crawl_progress_received = Signal(str, object)
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("ODeR")
@@ -1081,6 +1185,9 @@ class MainWindow(QMainWindow):
         self._crawl_status_lock = threading.Lock()
         self._crawl_status = {}
         self._crawl_stop_events = {}
+        self._crawl_profiles = {}
+        self._crawl_last_emit = {}
+        self.crawl_progress_received.connect(self._on_crawl_progress)
         self._pages = {}
         self._tab_buttons = {}
         self._tab_closers = {}
@@ -1097,6 +1204,9 @@ class MainWindow(QMainWindow):
         self._update_check_task = None
         self._update_download_task = None
         self._install_when_idle_path = None
+        self._cache_stats_task = None
+        self._cache_stats_pending = False
+        self._shutting_down = False
 
         root = QWidget()
         root_layout = QHBoxLayout(root)
@@ -1206,25 +1316,14 @@ class MainWindow(QMainWindow):
         self.storage = None
         self.changes = None
 
-        try:
-            startup_settings=load_settings()
-            if startup_settings.get("startup_initialize_caches", True):
-                for profile in load_profiles():
-                    try:
-                        cache.migrate_json_if_needed(profile["id"], profile.get("base_url", ""))
-                        cache.initialize(profile["id"], profile.get("base_url", ""))
-                    except Exception as exc:
-                        applog.log(f"startup cache check failed for {profile.get('name','site')}: {exc}")
-        except Exception as exc:
-            applog.log(f"startup cache initialization failed: {exc}")
-
         self.home = self._make_home_page()
         # Populate the home page from profiles that were already saved before
         # creating the first page. Previously HomePage started with an empty
         # placeholder and was only refreshed as a side effect of adding/editing
         # a site, making existing directories appear only after a new one was
         # added.
-        self.home.refresh(load_profiles())
+        startup_profiles = load_profiles()
+        self.home.refresh(startup_profiles)
         self._add_page("home", "Home", "", self.home, closable=False)
         self._rebuild_tab_bar()
         self._select_key("home")
@@ -1243,10 +1342,12 @@ class MainWindow(QMainWindow):
         downloader.start_background_worker(log=applog.log)
         applog.log("Application started")
         self.statusBar().showMessage("Ready · ODeR")
+        QTimer.singleShot(0, lambda profiles=startup_profiles: self._start_home_stats_refresh(profiles))
         if load_settings().get("resume_crawls_at_startup", False):
             QTimer.singleShot(800, self._resume_startup_crawls)
         QTimer.singleShot(3000, self._maybe_check_updates)
         QApplication.instance().aboutToQuit.connect(self._cancel_update_download)
+        QApplication.instance().aboutToQuit.connect(self._shutdown_cache_stats)
 
     def _apply_settings_style(self):
         settings=load_settings(); theme=settings.get("theme","dark")
@@ -1258,8 +1359,42 @@ class MainWindow(QMainWindow):
                 val=_normalize_hex(custom.get(key))
                 if val: colors[key]=val
         self.setStyleSheet(_render_theme_qss(colors))
-        if hasattr(self,"home"):
-            self.home.refresh(load_profiles())
+
+    def _start_home_stats_refresh(self, profiles=None):
+        if self._shutting_down:
+            return
+        profiles = list(profiles if profiles is not None else load_profiles())
+        if self._cache_stats_task is not None and self._cache_stats_task.isRunning():
+            self._cache_stats_pending = True
+            return
+        self._cache_stats_pending = False
+        initialize_caches = load_settings().get("startup_initialize_caches", True)
+        task = CacheStatsTask(profiles, initialize_caches, self)
+        task.stats_ready.connect(self.home.update_profile_stats)
+        task.stats_failed.connect(
+            lambda profile_id, error: applog.log(f"cache statistics failed for {profile_id}: {error}")
+        )
+        task.finished.connect(lambda finished_task=task: self._home_stats_finished(finished_task))
+        self._cache_stats_task = task
+        task.start()
+
+    def _home_stats_finished(self, task):
+        if self._cache_stats_task is not task:
+            task.deleteLater()
+            return
+        self._cache_stats_task = None
+        task.deleteLater()
+        if self._cache_stats_pending:
+            self._cache_stats_pending = False
+            self._start_home_stats_refresh()
+
+    def _shutdown_cache_stats(self):
+        self._shutting_down = True
+        self._cache_stats_pending = False
+        task = self._cache_stats_task
+        if task is not None and task.isRunning():
+            task.requestInterruption()
+            task.wait()
 
     # ---------- application updates ----------
 
@@ -1837,7 +1972,9 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Opened {profile['name']}")
 
     def _reload_tabs(self, select_key=None):
-        self.home.refresh(load_profiles())
+        profiles = load_profiles()
+        self.home.refresh(profiles)
+        self._start_home_stats_refresh(profiles)
         for key, widget in list(self._pages.items()):
             if key.startswith("site:"):
                 pid = key.split(":", 1)[1]
@@ -2188,7 +2325,9 @@ class MainWindow(QMainWindow):
             applog.log(f"Site removed: {profile['name']}")
             delete_profile(profile["id"], delete_files=False)
             self._remove_page(key)
-            self.home.refresh(load_profiles())
+            profiles = load_profiles()
+            self.home.refresh(profiles)
+            self._start_home_stats_refresh(profiles)
             self._select_key("home")
 
     def _optimize_cache(self, profile_id):
@@ -2229,12 +2368,61 @@ class MainWindow(QMainWindow):
         browser = self._pages.get(f"site:{profile_id}")
         if isinstance(browser, BrowserWidget):
             browser.refresh_cache()
-        self.home.refresh(load_profiles())
+        self.home.update_profile_stats(
+            profile_id, {"entries": 1, "folders": 1, "files": 0}, get_profile(profile_id) or profile
+        )
         if self.storage is not None:
             self.storage.refresh()
         QMessageBox.information(self, "Cache cleared", "The cached index was cleared. Downloaded files were not changed.")
 
     # ---------- crawling ----------
+
+    def _crawl_progress_callback(self, profile_id):
+        """Create a throttled worker callback that posts lightweight UI events."""
+        def progress_cb(progress):
+            now = time.monotonic()
+            terminal = bool(progress.get("done") or progress.get("error") or progress.get("stopped"))
+            with self._crawl_status_lock:
+                status = self._crawl_status.setdefault(profile_id, {})
+                status.update(progress)
+                status["running"] = not terminal
+                status["phase"] = "finished" if terminal else "running"
+                if terminal:
+                    status["finalizing"] = True
+                status["last_update"] = time.time()
+                snapshot = dict(status)
+                last_emit = self._crawl_last_emit.get(profile_id, 0.0)
+                should_emit = terminal or now - last_emit >= 0.12
+                if should_emit:
+                    self._crawl_last_emit[profile_id] = now
+            if should_emit:
+                self.crawl_progress_received.emit(profile_id, snapshot)
+        return progress_cb
+
+    @Slot(str, object)
+    def _on_crawl_progress(self, profile_id, status):
+        profile = self._crawl_profiles.get(profile_id)
+        if profile is None:
+            profile = get_profile(profile_id)
+        if self.activity is not None and profile is not None:
+            if status.get("running") and profile_id in self.activity._active_widgets:
+                self.activity._update_active_display(profile, status)
+            else:
+                self.activity._structure_signature = None
+                self._refresh_activity()
+        if status.get("phase") == "preparing":
+            self.statusBar().showMessage(f"Preparing update for {profile['name'] if profile else profile_id}…")
+
+    def _finish_crawl_worker(self, profile_id):
+        with self._crawl_status_lock:
+            status = self._crawl_status.setdefault(profile_id, {})
+            status["running"] = False
+            status["finalizing"] = False
+            status["finalized"] = True
+            snapshot = dict(status)
+        self._crawl_stop_events.pop(profile_id, None)
+        self._crawl_last_emit.pop(profile_id, None)
+        self.crawl_progress_received.emit(profile_id, snapshot)
 
     def _start_folder_crawl_for(self, profile_id, folder_url, grow=False):
         profile = get_profile(profile_id)
@@ -2244,33 +2432,32 @@ class MainWindow(QMainWindow):
             if self._crawl_status.get(profile_id, {}).get("running"):
                 self.statusBar().showMessage("This directory is already updating · Open Activity for details")
                 return
-            self._crawl_status[profile_id] = {"running": True, "crawled": 0, "current": folder_url,
-                                              "error": None, "started_at": __import__("time").time(),
-                                              "elapsed": 0.0, "folders_discovered": cache.count_dirs(profile_id),
-                                              "files_discovered": cache.count_files(profile_id), "queued": 0,
+            self._crawl_status[profile_id] = {"running": True, "phase": "preparing",
+                                              "crawled": 0, "current": folder_url,
+                                              "error": None, "started_at": time.time(),
+                                              "elapsed": 0.0, "folders_discovered": 0,
+                                              "files_discovered": 0, "queued": 0,
                                               "rate": 0.0, "mode": "grow" if grow else "folder",
                                               "folder_url": folder_url}
             self._crawl_stop_events[profile_id] = threading.Event()
-
-        def progress_cb(p):
-            with self._crawl_status_lock:
-                st = self._crawl_status.setdefault(profile_id, {})
-                st.update(p)
-                st["running"] = not p.get("done") and not p.get("error")
-                st["last_update"] = __import__("time").time()
+            initial_status = dict(self._crawl_status[profile_id])
+        self._crawl_profiles[profile_id] = profile
+        progress_cb = self._crawl_progress_callback(profile_id)
 
         def run():
             try:
                 crawl_folder(profile, folder_url, progress_cb=progress_cb, log=applog.log,
                              stop_check=self._crawl_stop_events[profile_id].is_set,
                              grow_one_level=grow)
+            except Exception as exc:
+                applog.log(f"folder update setup failed: {folder_url} — {exc}")
+                progress_cb({"done": False, "error": str(exc), "current": folder_url})
             finally:
-                with self._crawl_status_lock:
-                    self._crawl_status.setdefault(profile_id, {})["running"] = False
-                self._crawl_stop_events.pop(profile_id, None)
+                self._finish_crawl_worker(profile_id)
 
         action = "Growing" if grow else "Updating"
         applog.log(f"{action} folder: {profile['name']} — {folder_url}")
+        self.crawl_progress_received.emit(profile_id, initial_status)
         threading.Thread(target=run, daemon=True).start()
         self.statusBar().showMessage(f"{action} {folder_url}…")
 
@@ -2290,29 +2477,28 @@ class MainWindow(QMainWindow):
             if self._crawl_status.get(profile_id, {}).get("running"):
                 self.statusBar().showMessage("This directory is already updating · Open Activity for details")
                 return
-            self._crawl_status[profile_id] = {"running": True, "crawled": 0, "current": None, "error": None,
-                                              "started_at": __import__("time").time(), "elapsed": 0.0,
+            self._crawl_status[profile_id] = {"running": True, "phase": "preparing",
+                                              "crawled": 0, "current": None, "error": None,
+                                              "started_at": time.time(), "elapsed": 0.0,
                                               "folders_discovered": 0, "files_discovered": 0, "queued": 0,
                                               "rate": 0.0, "mode": mode}
             self._crawl_stop_events[profile_id] = threading.Event()
-
-        def progress_cb(p):
-            with self._crawl_status_lock:
-                st = self._crawl_status.setdefault(profile_id, {})
-                st.update(p)
-                st["running"] = not p.get("done") and not p.get("error")
-                st["last_update"] = __import__("time").time()
+            initial_status = dict(self._crawl_status[profile_id])
+        self._crawl_profiles[profile_id] = profile
+        progress_cb = self._crawl_progress_callback(profile_id)
 
         def run():
             try:
                 crawl_profile(profile, progress_cb=progress_cb, log=applog.log,
                               stop_check=self._crawl_stop_events[profile_id].is_set, mode=mode)
+            except Exception as exc:
+                applog.log(f"crawl setup failed: {profile['name']} — {exc}")
+                progress_cb({"done": False, "error": str(exc), "current": None})
             finally:
-                with self._crawl_status_lock:
-                    self._crawl_status.setdefault(profile_id, {})["running"] = False
-                self._crawl_stop_events.pop(profile_id, None)
+                self._finish_crawl_worker(profile_id)
 
         applog.log(f"{mode.title()} crawl started: {profile['name']} ({profile['base_url']})")
+        self.crawl_progress_received.emit(profile_id, initial_status)
         threading.Thread(target=run, daemon=True).start()
         self.statusBar().showMessage(f"Updating {profile['name']}…")
 
@@ -2345,18 +2531,24 @@ class MainWindow(QMainWindow):
             self.logs.poll_new()
         with self._crawl_status_lock:
             statuses = {k: dict(v) for k, v in self._crawl_status.items()}
-        if self.activity is not None:
-            self.activity.refresh(load_profiles(), statuses)
-        for key, widget in list(self._pages.items()):
-            if not key.startswith("site:"):
-                continue
-            pid = key.split(":", 1)[1]
-            st = statuses.get(pid, {})
-            if (st.get("done") or st.get("stopped") or st.get("error")) and not st.get("_consumed"):
-                self._crawl_status[pid]["_consumed"] = True
-                widget.refresh_cache()
-                self.home.refresh(load_profiles())
-                profile = widget.profile
+        for pid, st in statuses.items():
+            if (st.get("done") or st.get("stopped") or st.get("error")) and st.get("finalized") and not st.get("_consumed"):
+                with self._crawl_status_lock:
+                    current_status = self._crawl_status.get(pid, {})
+                    if current_status.get("_consumed"):
+                        continue
+                    current_status["_consumed"] = True
+                browser = self._pages.get(f"site:{pid}")
+                if isinstance(browser, BrowserWidget):
+                    browser.refresh_cache()
+                profile = get_profile(pid) or self._crawl_profiles.get(pid)
+                if profile is None:
+                    continue
+                folders = int(st.get("folders_discovered", 0))
+                files = int(st.get("files_discovered", 0))
+                self.home.update_profile_stats(
+                    pid, {"entries": folders + files, "folders": folders, "files": files}, profile
+                )
                 if st.get("error"):
                     self.statusBar().showMessage(f"Crawl failed for {profile['name']}: {st['error']}")
                 elif st.get("stopped"):
@@ -2379,7 +2571,9 @@ class MainWindow(QMainWindow):
                 if self.storage is not None:
                     self.storage.refresh()
             elif st.get("running"):
-                self.statusBar().showMessage(f"Updating {widget.profile['name']}… {st.get('crawled', 0):,} folders · {st.get('rate', 0):.1f}/s · {st.get('workers', 1)} workers · {st.get('queued', 0):,} queued")
+                profile = self._crawl_profiles.get(pid) or get_profile(pid)
+                if profile is not None:
+                    self.statusBar().showMessage(f"Updating {profile['name']}… {st.get('crawled', 0):,} folders · {st.get('rate', 0):.1f}/s · {st.get('workers', 1)} workers · {st.get('queued', 0):,} queued")
 
         if self._install_when_idle_path:
             crawls, downloads = self._active_work_counts()
@@ -2397,8 +2591,10 @@ class MainWindow(QMainWindow):
             self.downloads.refresh()
         elif self._current_key == "search" and self.search_page is not None:
             self._run_search_now()
-        else:
-            self.home.refresh(load_profiles())
+        elif self._current_key == "home":
+            profiles = load_profiles()
+            self.home.refresh(profiles)
+            self._start_home_stats_refresh(profiles)
 
     def _full_refresh_current(self):
         widget = self._pages.get(self._current_key)

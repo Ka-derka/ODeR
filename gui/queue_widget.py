@@ -71,6 +71,9 @@ class QueueWidget(QWidget):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.addLayout(controls)
         layout.addWidget(self.tree, 1)
+        self._structure_key = None
+        self._group_rows = {}
+        self._item_rows = {}
 
     @staticmethod
     def _progress(item):
@@ -83,13 +86,6 @@ class QueueWidget(QWidget):
         return 0, item.get("status", "")
 
     def refresh(self):
-        expanded = {
-            top.data(0, Qt.UserRole + 1)
-            for index in range(self.tree.topLevelItemCount())
-            for top in (self.tree.topLevelItem(index),)
-            if top.isExpanded()
-        }
-        self.tree.clear()
         items = list(reversed(downloader.load_queue()))
         groups = OrderedDict()
         singles = []
@@ -100,8 +96,35 @@ class QueueWidget(QWidget):
             else:
                 singles.append(item)
 
+        structure_key = (
+            tuple((group_id, tuple(item["id"] for item in members)) for group_id, members in groups.items()),
+            tuple(item["id"] for item in singles),
+        )
+        if structure_key == self._structure_key:
+            for group_id, members in groups.items():
+                self._update_group_row(self._group_rows[group_id], members)
+                for item in members:
+                    self._update_item_row(self._item_rows[item["id"]], item)
+            for item in singles:
+                self._update_item_row(self._item_rows[item["id"]], item)
+            self._update_summary(items)
+            return
+
+        expanded = {
+            top.data(0, Qt.UserRole + 1)
+            for index in range(self.tree.topLevelItemCount())
+            for top in (self.tree.topLevelItem(index),)
+            if top.isExpanded()
+        }
+        self.tree.clear()
+        self._structure_key = structure_key
+        self._group_rows = {}
+        self._item_rows = {}
+
         for group_id, members in groups.items():
-            summary = downloader.group_summary(group_id)
+            # `items` is already a consistent queue snapshot. Re-reading the
+            # JSON file once per group blocked the UI behind active writers.
+            summary = downloader.summarize_group_items(members)
             group_name = members[0].get("group_name") or "Download batch"
             status = f"{summary['done']}/{summary['total']} complete"
             if summary.get("errors"):
@@ -110,6 +133,7 @@ class QueueWidget(QWidget):
             top.setData(0, Qt.UserRole, ("group", group_id))
             top.setData(0, Qt.UserRole + 1, group_id)
             self.tree.addTopLevelItem(top)
+            self._group_rows[group_id] = top
             # Expansion only sticks after the item belongs to the tree. Setting
             # it before insertion made an opened site group collapse again on
             # the next one-second refresh.
@@ -126,6 +150,9 @@ class QueueWidget(QWidget):
         for item in singles:
             self._add_item(item)
 
+        self._update_summary(items)
+
+    def _update_summary(self, items):
         active = sum(item.get("status") in ("pending", "downloading", "paused") for item in items)
         done = sum(item.get("status") == "done" for item in items)
         errors = sum(item.get("status") == "error" for item in items)
@@ -134,6 +161,36 @@ class QueueWidget(QWidget):
             f"{active} active · {done} completed · {errors} failed" + (f" · {fmt_bytes(speed)}/s" if speed else "")
         )
 
+    def _update_group_row(self, row, members):
+        summary = downloader.summarize_group_items(members)
+        row.setText(0, members[0].get("group_name") or "Download batch")
+        row.setText(1, members[0].get("profile_name", ""))
+        status = f"{summary['done']}/{summary['total']} complete"
+        if summary.get("errors"):
+            status += f" · {summary['errors']} failed"
+        row.setText(2, status)
+        bar = self.tree.itemWidget(row, 3)
+        if bar is not None:
+            bar.setValue(summary.get("percent", 0))
+            bar.setFormat(f"{fmt_bytes(summary.get('bytes_done'))} / {fmt_bytes(summary.get('bytes_total'))}")
+        speed = summary.get("speed_bps") or 0
+        row.setText(4, f"{fmt_bytes(speed)}/s" + (f" · {fmt_duration(summary.get('eta_seconds'))}" if speed else ""))
+
+    def _update_item_row(self, row, item):
+        status = item.get("status", "")
+        if item.get("error"):
+            status += f": {item['error']}"
+        row.setText(0, item.get("name", ""))
+        row.setText(1, item.get("profile_name", ""))
+        row.setText(2, status)
+        value, text = self._progress(item)
+        bar = self.tree.itemWidget(row, 3)
+        if bar is not None:
+            bar.setValue(value)
+            bar.setFormat(text)
+        speed = float(item.get("speed_bps") or 0)
+        row.setText(4, f"{fmt_bytes(speed)}/s" + (f" · {fmt_duration(item.get('eta_seconds'))}" if speed else ""))
+
     def _add_item(self, item, parent=None):
         status = item.get("status", "")
         if item.get("error"):
@@ -141,6 +198,7 @@ class QueueWidget(QWidget):
         row = QTreeWidgetItem([item.get("name", ""), item.get("profile_name", ""), status, "", ""])
         row.setData(0, Qt.UserRole, ("item", item["id"]))
         (parent.addChild if parent else self.tree.addTopLevelItem)(row)
+        self._item_rows[item["id"]] = row
         value, text = self._progress(item)
         bar = QProgressBar()
         bar.setValue(value)

@@ -158,7 +158,7 @@ def crawl_folder(profile, folder_url, progress_cb=None, log=print, stop_check=No
                           int(global_settings.get("network_max_connections", 12))))
     delay = max(0.0, float(settings.get("crawl_delay_seconds", 0.25)))
     mode = "grow" if grow_one_level else "folder"
-    snapshot_id = cache.begin_snapshot(profile["id"], mode, folder_url)
+    snapshot_id = None
 
     def emit(p):
         if progress_cb:
@@ -166,11 +166,14 @@ def crawl_folder(profile, folder_url, progress_cb=None, log=print, stop_check=No
             p.setdefault("folder_url", folder_url)
             progress_cb(p)
 
+    totals = cache.count_summary(profile["id"])
+    discovered, files = totals["folders"], totals["files"]
+    last_count_refresh = time.monotonic()
     emit({"done": False, "running": True, "started_at": started_at,
           "started_iso": started_iso, "crawled": 0, "current": folder_url,
           "queued": 0, "requests": 0,
-          "folders_discovered": cache.count_dirs(profile["id"]),
-          "files_discovered": cache.count_files(profile["id"]),
+          "folders_discovered": discovered,
+          "files_discovered": files,
           "elapsed": 0.0, "rate": 0.0, "workers": workers})
 
     index_source = profile.get("index_source") or {}
@@ -205,6 +208,10 @@ def crawl_folder(profile, folder_url, progress_cb=None, log=print, stop_check=No
         # and is also the first step of the one-level grow action.
         entries = fetch_one(folder_url)
         requests_done += 1
+        # Capture the comparison immediately before the first write. Network
+        # activity now begins at once instead of waiting for a potentially
+        # very large folder baseline to be copied first.
+        snapshot_id = cache.begin_snapshot(profile["id"], mode, folder_url)
         rows = []
         for entry in entries:
             rows.append((entry["url"], entry["name"], 1 if entry["is_dir"] else 0,
@@ -212,7 +219,6 @@ def crawl_folder(profile, folder_url, progress_cb=None, log=print, stop_check=No
             if entry["is_dir"]:
                 child_dirs.append(entry["url"])
         cache.replace_children(profile["id"], folder_url, rows)
-        cache.mark_crawled(profile["id"], folder_url, True)
         crawled += 1
 
         if grow_one_level:
@@ -249,29 +255,35 @@ def crawl_folder(profile, folder_url, progress_cb=None, log=print, stop_check=No
                                 child_rows.append((entry["url"], entry["name"], 1 if entry["is_dir"] else 0,
                                                    entry["size"], url, 0))
                             cache.replace_children(profile["id"], url, child_rows)
-                            cache.mark_crawled(profile["id"], url, True)
                             crawled += 1
                         except Exception as exc:
                             log(f"failed: {url} — {exc}")
                         requests_done += 1
                         completed += 1
                         elapsed = max(0.001, time.time() - started_at)
+                        if time.monotonic() - last_count_refresh >= 0.75:
+                            totals = cache.count_summary(profile["id"])
+                            discovered, files = totals["folders"], totals["files"]
+                            last_count_refresh = time.monotonic()
                         emit({"crawled": crawled, "requests": requests_done,
                               "queued": len(futures), "current": url,
-                              "folders_discovered": cache.count_dirs(profile["id"]),
-                              "files_discovered": cache.count_files(profile["id"]),
+                              "folders_discovered": discovered,
+                              "files_discovered": files,
                               "elapsed": elapsed, "rate": crawled / elapsed,
                               "grow_completed": completed,
                               "grow_total": len(child_targets)})
 
         elapsed = max(0.001, time.time() - started_at)
+        totals = cache.count_summary(profile["id"])
+        discovered, files = totals["folders"], totals["files"]
         stats = {"done": True, "running": False, "crawled": crawled,
                  "requests": requests_done, "queued": 0, "current": None,
-                 "folders_discovered": cache.count_dirs(profile["id"]),
-                 "files_discovered": cache.count_files(profile["id"]),
+                 "folders_discovered": discovered,
+                 "files_discovered": files,
                  "elapsed": elapsed, "rate": crawled / elapsed,
                  "mode": mode, "folder_url": folder_url}
         stats["changes"] = cache.finish_snapshot(profile["id"], snapshot_id, "completed")
+        _save_history(profile, stats, started_iso)
         emit(stats)
         if grow_one_level:
             log(f"grew {folder_url} by one level — {crawled} folder(s), {requests_done} request(s)")
@@ -286,7 +298,11 @@ def crawl_folder(profile, folder_url, progress_cb=None, log=print, stop_check=No
                  "files_discovered": cache.count_files(profile["id"]),
                  "elapsed": elapsed, "rate": crawled / elapsed,
                  "mode": mode, "folder_url": folder_url}
-        stats["changes"] = cache.finish_snapshot(profile["id"], snapshot_id, "partial")
+        if snapshot_id is not None:
+            stats["changes"] = cache.finish_snapshot(profile["id"], snapshot_id, "partial")
+        else:
+            stats["changes"] = {"new_count": 0, "removed_count": 0, "changed_count": 0}
+        _save_history(profile, stats, started_iso)
         emit(stats)
         log(f"folder update failed: {folder_url} — {exc}")
         return False
@@ -311,7 +327,8 @@ def _save_history(profile, stats, started_iso):
     }
     history = list(profile.get("crawl_history") or [])
     history.insert(0, entry)
-    update_profile(profile["id"], last_crawled=finished_iso, folders_cached=int(stats.get("crawled", 0)),
+    update_profile(profile["id"], last_crawled=finished_iso,
+                   folders_cached=int(stats.get("folders_discovered", stats.get("crawled", 0))),
                    last_crawl_stats=entry, crawl_history=history[:20])
 
 
@@ -351,10 +368,12 @@ def crawl_profile(profile, progress_cb=None, log=print, stop_check=None, mode="r
         if progress_cb:
             progress_cb(p)
 
+    totals = cache.count_summary(profile["id"])
+    discovered, files = totals["folders"], totals["files"]
     emit({"done": False, "running": True, "started_at": started_at, "mode": mode,
           "started_iso": started_iso, "crawled": 0, "current": None,
-          "queued": 0, "requests": 0, "folders_discovered": cache.count_dirs(profile["id"]),
-          "files_discovered": cache.count_files(profile["id"]), "elapsed": 0.0,
+          "queued": 0, "requests": 0, "folders_discovered": discovered,
+          "files_discovered": files, "elapsed": 0.0,
           "rate": 0.0, "workers": workers})
 
     index_source = profile.get("index_source")
@@ -426,7 +445,8 @@ def crawl_profile(profile, progress_cb=None, log=print, stop_check=None, mode="r
 
     count = 0
     requests_done = 0
-    last_counts = (None, None)
+    last_counts = (discovered, files)
+    last_count_refresh = time.monotonic()
     failed_this_run = set()
     last_state_save = 0.0
     crawl_state.mark_started(profile["id"], mode, started_iso, len(initial), base_url)
@@ -510,19 +530,21 @@ def crawl_profile(profile, progress_cb=None, log=print, stop_check=None, mode="r
                     if entry["is_dir"]:
                         push_pending(u)
                 cache.replace_children(profile["id"], current, rows)
-                cache.mark_crawled(profile["id"], current, True)
                 count += 1
 
                 found_dirs = sum(1 for e in entries if e["is_dir"])
                 found_files = len(entries) - found_dirs
                 log(f"crawled: {current} — {found_dirs} folder(s), {found_files} file(s) found")
 
-                # Database COUNTs are noticeably more expensive than the HTTP
-                # work at high concurrency, so only refresh them when a request
-                # completes, and reuse them for the emitted state below.
-                discovered = cache.count_dirs(profile["id"])
-                files = cache.count_files(profile["id"])
-                last_counts = (discovered, files)
+                # COUNTs can dominate fast crawls. Refresh them at a human-
+                # visible cadence and reuse the last values between samples.
+                if time.monotonic() - last_count_refresh >= 0.75:
+                    totals = cache.count_summary(profile["id"])
+                    discovered, files = totals["folders"], totals["files"]
+                    last_counts = (discovered, files)
+                    last_count_refresh = time.monotonic()
+                else:
+                    discovered, files = last_counts
                 elapsed = max(0.001, time.time() - started_at)
                 emit({"done": False, "crawled": count, "current": current,
                       "queued": len(pending_heap) + len(futures), "requests": requests_done,
@@ -537,10 +559,9 @@ def crawl_profile(profile, progress_cb=None, log=print, stop_check=None, mode="r
 
     stopped = bool(stop_check and stop_check())
     elapsed = max(0.001, time.time() - started_at)
-    discovered, files = last_counts
-    if discovered is None:
-        discovered = cache.count_dirs(profile["id"])
-        files = cache.count_files(profile["id"])
+    # Finish with exact counts even if the last progress sample was throttled.
+    totals = cache.count_summary(profile["id"])
+    discovered, files = totals["folders"], totals["files"]
     pending_after = len(cache.pending_dirs(profile["id"]))
     stats = {"done": (not stopped and pending_after == 0), "stopped": stopped,
              "crawled": count, "current": None, "queued": pending_after,

@@ -154,8 +154,8 @@ def remove_group(group_id):
         remove_item(item["id"])
 
 
-def group_summary(group_id):
-    items = items_in_group(group_id)
+def summarize_group_items(items):
+    """Summarize an already-loaded group without rereading queue.json."""
     total = sum(int(item.get("bytes_total") or 0) for item in items)
     done = sum(int(item.get("bytes_done") or 0) for item in items)
     speed = sum(float(item.get("speed_bps") or 0) for item in items if item.get("status") == "downloading")
@@ -169,6 +169,10 @@ def group_summary(group_id):
             "bytes_total": total or None, "bytes_done": done,
             "speed_bps": speed, "eta_seconds": eta, "active": active,
             "failed": failed, "completed": completed}
+
+
+def group_summary(group_id):
+    return summarize_group_items(items_in_group(group_id))
 
 
 def _safe_component(value, fallback="item"):
@@ -216,6 +220,7 @@ def _download_one(item, settings, log):
     started = time.monotonic()
     sample_started = started
     sample_bytes = existing
+    last_queue_update = 0.0
     try:
         with requests.get(item["url"], headers=headers, stream=True,
                            timeout=settings.get("request_timeout_seconds", 20)) as resp:
@@ -249,8 +254,13 @@ def _download_one(item, settings, log):
                         elapsed_sample = max(0.001, now - sample_started)
                         speed = max(0.0, (done - sample_bytes) / elapsed_sample)
                         eta = ((total_bytes - done) / speed) if total_bytes and speed > 0 else None
-                        update_item(item["id"], bytes_done=done, bytes_total=total_bytes,
-                                    speed_bps=speed, eta_seconds=eta)
+                        # Persist progress at a UI-visible cadence instead of
+                        # rewriting and reparsing the whole queue for every
+                        # network chunk (often dozens of times per second).
+                        if now - last_queue_update >= 0.25:
+                            update_item(item["id"], bytes_done=done, bytes_total=total_bytes,
+                                        speed_bps=speed, eta_seconds=eta)
+                            last_queue_update = now
                         if elapsed_sample >= 2.0:
                             sample_started = now
                             sample_bytes = done
