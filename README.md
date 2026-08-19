@@ -30,7 +30,7 @@ ODeR is designed primarily for Windows. The Python application can also run on o
 ## Run from source
 
 ```powershell
-git clone <your-repository-url>
+git clone https://github.com/Ka-derka/ODeR
 cd ODeR
 py -m venv .venv
 .\.venv\Scripts\Activate.ps1
