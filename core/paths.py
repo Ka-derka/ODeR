@@ -45,6 +45,12 @@ def data_dir():
     return d
 
 
+def updates_dir():
+    d = os.path.join(data_dir(), "updates")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
 def profiles_index_path():
     return os.path.join(data_dir(), "profiles.json")
 

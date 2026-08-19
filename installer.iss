@@ -2,7 +2,7 @@
 ; Build the standalone exe first with: pyinstaller build.spec
 
 #define MyAppName "ODeR"
-#define MyAppVersion "0.15.2"
+#define MyAppVersion "0.16.0"
 #define MyBuildExeName "ODeR-Portable.exe"
 #define MyAppExeName "ODeR.exe"
 
@@ -10,6 +10,10 @@
 AppId={{D8C0F60B-AB9E-4D91-90AA-0BD000000001}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
+AppPublisher=kaderka
+AppPublisherURL=https://github.com/Ka-derka/ODeR
+AppSupportURL=https://github.com/Ka-derka/ODeR/issues
+AppUpdatesURL=https://github.com/Ka-derka/ODeR/releases
 DefaultDirName={autopf}\ODeR
 DefaultGroupName={#MyAppName}
 OutputDir=release-dist
@@ -21,6 +25,8 @@ PrivilegesRequired=admin
 UninstallDisplayIcon={app}\{#MyAppExeName}
 ChangesAssociations=yes
 LicenseFile=LICENSE
+CloseApplications=yes
+RestartApplications=no
 
 [Files]
 Source: "dist\{#MyBuildExeName}"; DestDir: "{app}"; DestName: "{#MyAppExeName}"; Flags: ignoreversion

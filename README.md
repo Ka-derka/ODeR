@@ -4,7 +4,7 @@
 
 ODeR is a PySide6 desktop application for indexing web directory listings, browsing the cached tree offline, tracking changes, and downloading selected files. Each directory keeps its own crawl and download settings, while the local SQLite index remains fast enough for large archives.
 
-Current version: **0.15.2**
+Current version: **0.16.0**
 
 ## Highlights
 
@@ -18,6 +18,7 @@ Current version: **0.15.2**
 - Export either a complete directory or a selected subtree.
 - Manage, repair, compact, or clear cached indexes without touching downloads.
 - Choose Graphite, Midnight, Light, OLED Black, or a custom color palette.
+- Check stable or preview GitHub releases in-app and download verified updates.
 
 ## Requirements
 
@@ -48,7 +49,7 @@ python -m compileall -q core gui main.py
 python -m unittest discover -s tests -v
 ```
 
-The repository includes tests for cache paging and search, snapshots, crawl recovery, grouped downloads, favorites, `.oder` validation, subtree exports, conflict handling, and package comparison.
+The repository includes tests for cache paging and search, snapshots, crawl recovery, grouped downloads, favorites, `.oder` validation, subtree exports, conflict handling, package comparison, update selection, and verified update downloads.
 
 ## Build for Windows
 
@@ -66,6 +67,14 @@ The script installs PyInstaller and prepares GitHub-ready files in `release-dist
 - `SHA256SUMS.txt` — SHA-256 checksums for the generated release assets.
 
 Portable ODeR stores its writable `data` directory beside the executable. The installed application stores writable data in `%LOCALAPPDATA%\ODeR`, not in `Program Files`. See [RELEASING.md](RELEASING.md) for the complete release checklist.
+
+## Application updates
+
+Installed builds can check GitHub for stable or preview releases from **Settings → Application updates**. ODeR checks at most once per day when automatic checks are enabled, and a manual **Check now** action is always available. Update checks send only the normal GitHub request and ODeR version user-agent; local directory URLs, searches, downloads, and usage data are not sent.
+
+ODeR matches the exact `ODeR Installer.exe` release asset, streams it into `%LOCALAPPDATA%\ODeR\updates`, and verifies its SHA-256 digest before offering to launch it. GitHub's asset digest is preferred, with `SHA256SUMS.txt` as a fallback. A failed size or hash check deletes the partial download. When crawls or downloads are active, installation can wait until background work becomes idle.
+
+Portable builds use the same release notification interface but download `ODeR-Portable.zip` instead of modifying the running executable. Source checkouts can inspect the latest release without launching an installer.
 
 ## `.oder` package format
 

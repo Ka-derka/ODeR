@@ -33,6 +33,10 @@ DEFAULTS = {
     "incremental_stale_days": 7,
     "notify_directory_changes": True,
     "browser_page_size": 500,
+    "automatic_update_checks": True,
+    "update_channel": "stable",
+    "last_update_check_at": None,
+    "skipped_update_version": None,
 }
 
 

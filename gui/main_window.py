@@ -1,5 +1,6 @@
 import csv
 import os
+import sys
 import threading
 import uuid
 from datetime import datetime
@@ -11,15 +12,15 @@ from PySide6.QtWidgets import (
     QFormLayout, QComboBox, QCheckBox, QSpinBox, QDoubleSpinBox, QFileDialog, QColorDialog,
     QProgressDialog, QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView
 )
-from PySide6.QtCore import Qt, QTimer, Signal, Slot, QThread, QStandardPaths
-from PySide6.QtGui import QShortcut, QKeySequence, QColor
+from PySide6.QtCore import Qt, QTimer, Signal, Slot, QThread, QStandardPaths, QUrl
+from PySide6.QtGui import QShortcut, QKeySequence, QColor, QDesktopServices
 
 from core.profiles import load_profiles, create_profile, update_profile, delete_profile, get_profile
-from core import cache, library, crawl_state
+from core import cache, library, crawl_state, updater
 from core.crawl import crawl_profile, crawl_folder
 from core import downloader
 from core import applog
-from core.paths import data_dir
+from core.paths import data_dir, is_portable
 from core.settings import load_settings, save_settings, downloads_root
 from core.oder_package import (
     compare_packages, export_directory, find_conflicts, import_directory, inspect_package,
@@ -33,6 +34,7 @@ from gui.logs_page import LogsPage
 from gui.package_dialogs import (
     ExportDirectoryDialog, ImportDirectoryDialog, PackageComparisonDialog, PackageTask, format_bytes,
 )
+from gui.update_dialogs import UpdateCheckTask, UpdateDialog, UpdateDownloadTask
 
 
 THEME_PRESETS = {
@@ -153,11 +155,11 @@ QWidget#tabRow[selected="true"] QToolButton#tabButton { color: @TEXT@; }
 QToolButton#tabCloseButton { background: @INPUT@; color: @MUTED@; border: 1px solid @BUTTON_BORDER@; border-radius: 4px; padding: 0; min-width: 23px; max-width: 23px; min-height: 23px; max-height: 23px; font-weight: 700; }
 QToolButton#tabCloseButton:hover { background: @BUTTON_HOVER@; color: @TEXT@; border-color: @ACCENT@; }
 QToolButton#tabCloseButton:pressed { background: @BUTTON_PRESSED@; }
-QLineEdit, QSpinBox, QDoubleSpinBox, QPlainTextEdit {
+QLineEdit, QSpinBox, QDoubleSpinBox, QPlainTextEdit, QTextBrowser {
     background: @INPUT@; border: 1px solid @BUTTON_BORDER@; border-radius: 5px;
     padding: 7px 9px; color: @TEXT@; selection-background-color: @ACCENT@; selection-color: @ACCENT_TEXT@;
 }
-QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QPlainTextEdit:focus { border: 1px solid @FOCUS@; }
+QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QPlainTextEdit:focus, QTextBrowser:focus { border: 1px solid @FOCUS@; }
 QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled { background: @DISABLED@; color: @DISABLED_TEXT@; }
 QPlainTextEdit#logText { font-family: Consolas, 'Courier New', monospace; font-size: 12px; border-radius: 6px; }
 QComboBox {
@@ -178,6 +180,8 @@ QHeaderView::section { background: @HEADER@; color: @MUTED@; border: none; borde
 QProgressBar { background: @INPUT@; color: @TEXT@; border: 1px solid @BUTTON_BORDER@; border-radius: 5px; text-align: center; min-height: 15px; }
 QProgressBar::chunk { background: @ACCENT@; border-radius: 4px; }
 QFrame#card { background: @CARD@; border: 1px solid @BUTTON_BORDER@; border-radius: 8px; }
+QFrame#updateBanner { background: @SELECTION@; border: 1px solid @ACCENT@; border-radius: 8px; }
+QLabel#updateBannerTitle { color: @TEXT@; font-weight: 600; }
 QLabel#cardTitle { font-size: 15px; font-weight: 600; color: @TEXT@; }
 QLabel#cardMeta { color: @MUTED@; background: transparent; }
 QStatusBar { background: @PANEL@; color: @MUTED@; border-top: 1px solid @BUTTON_BORDER@; }
@@ -230,6 +234,7 @@ class HomePage(QWidget):
     import_directory_requested = Signal()
     open_downloads_requested = Signal()
     open_settings_requested = Signal()
+    update_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -242,6 +247,21 @@ class HomePage(QWidget):
         subtitle.setObjectName("mutedLabel")
         self.layout.addWidget(title)
         self.layout.addWidget(subtitle)
+
+        self.update_banner = QFrame()
+        self.update_banner.setObjectName("updateBanner")
+        banner_layout = QHBoxLayout(self.update_banner)
+        banner_layout.setContentsMargins(14, 10, 10, 10)
+        self.update_label = QLabel()
+        self.update_label.setObjectName("updateBannerTitle")
+        self.update_label.setWordWrap(True)
+        banner_layout.addWidget(self.update_label, 1)
+        update_button = QPushButton("View update")
+        update_button.setObjectName("accentButton")
+        update_button.clicked.connect(self.update_requested.emit)
+        banner_layout.addWidget(update_button)
+        self.update_banner.hide()
+        self.layout.addWidget(self.update_banner)
 
         quick = QHBoxLayout()
         quick.setSpacing(10)
@@ -266,6 +286,15 @@ class HomePage(QWidget):
         self.layout.addWidget(self.cards_wrap)
         self.layout.addStretch(1)
         self.refresh([])
+
+    def show_update(self, info):
+        self.update_label.setText(
+            f"ODeR {info.version} is available · Review the release notes and download the update."
+        )
+        self.update_banner.show()
+
+    def clear_update(self):
+        self.update_banner.hide()
 
     def refresh(self, profiles):
         while self.cards_grid.count():
@@ -520,6 +549,8 @@ class ColorPickerField(QWidget):
 
 class SettingsPage(QWidget):
     settings_changed = Signal()
+    check_updates_requested = Signal(str)
+    skipped_update_cleared = Signal()
     import_directory_requested = Signal()
     compare_packages_requested = Signal()
     open_storage_requested = Signal()
@@ -580,12 +611,26 @@ class SettingsPage(QWidget):
         self.stale_days=QSpinBox(); self.stale_days.setRange(1,3650); self.stale_days.setSuffix(' days'); self.stale_days.setValue(int(self._settings.get('incremental_stale_days',7))); bf.addRow('Incremental update age',self.stale_days)
         self.page_size=QSpinBox(); self.page_size.setRange(50,5000); self.page_size.setSingleStep(50); self.page_size.setValue(int(self._settings.get('browser_page_size',500))); bf.addRow('Entries per browser page',self.page_size); form.addWidget(behavior)
 
+        updates=CollapsibleSection("Application updates", "GitHub release checks and update preferences", True, layout_type="form"); uf=updates.body_layout
+        runtime_mode = "Development" if not getattr(sys, "frozen", False) else ("Portable" if is_portable() else "Installed")
+        version_info=QLabel(f"ODeR {APP_VERSION} · {runtime_mode} edition")
+        version_info.setObjectName('mutedLabel'); uf.addRow('Current version',version_info)
+        self.auto_updates=QCheckBox('Automatically check for updates once per day'); self.auto_updates.setChecked(bool(self._settings.get('automatic_update_checks',True))); uf.addRow(self.auto_updates)
+        self.update_channel=QComboBox(); self.update_channel.addItem('Stable releases','stable'); self.update_channel.addItem('Preview releases','preview')
+        channel_index=self.update_channel.findData(self._settings.get('update_channel','stable')); self.update_channel.setCurrentIndex(channel_index if channel_index >= 0 else 0); uf.addRow('Update channel',self.update_channel)
+        update_hint=QLabel('Checks contact GitHub only and do not send directory URLs, searches, downloads, or other usage data.')
+        update_hint.setObjectName('mutedLabel'); update_hint.setWordWrap(True); uf.addRow('',update_hint)
+        self.update_status=QLabel(); self.update_status.setObjectName('mutedLabel'); self.update_status.setWordWrap(True); uf.addRow('Status',self.update_status)
+        update_actions=QHBoxLayout(); check_now=QPushButton('Check now'); check_now.clicked.connect(self._check_now); update_actions.addWidget(check_now)
+        self.clear_skipped=QPushButton('Clear skipped version'); self.clear_skipped.clicked.connect(self._clear_skipped_update); self.clear_skipped.setEnabled(bool(self._settings.get('skipped_update_version'))); update_actions.addWidget(self.clear_skipped); update_actions.addStretch(1); uf.addRow('',update_actions)
+        self.set_update_status(); form.addWidget(updates)
+
         keyboard=CollapsibleSection("Keyboard", "quick navigation and actions", False); kg=QGridLayout(); kg.setHorizontalSpacing(16); kg.setVerticalSpacing(7)
         for i,(key,desc) in enumerate([('Ctrl+T','New tab'),('Ctrl+W','Close tab'),('Ctrl+L','Focus search'),('Ctrl+F','Search current folder'),('F5','Update current folder'),('Ctrl+Shift+F5','Update entire site'),('Alt+Left / Alt+Right','Back / forward')]):
             badge=QLabel(key); badge.setObjectName('shortcutBadge'); badge.setAlignment(Qt.AlignCenter); kg.addWidget(badge,i,0); kg.addWidget(QLabel(desc),i,1)
         keyboard.body_layout.addLayout(kg); form.addWidget(keyboard)
 
-        packaging=CollapsibleSection("Application & packages", ".oder transfer and application storage", False); info=QLabel(f"ODeR {APP_VERSION}\nData folder: {data_dir()}\nPortable builds keep writable data next to the executable. Installed builds should keep writable data in the user profile rather than Program Files.")
+        packaging=CollapsibleSection("Application & packages", ".oder transfer and application storage", False); info=QLabel(f"ODeR {APP_VERSION}\nData folder: {data_dir()}\nPortable builds keep writable data beside the executable. Installed builds use the current user's local application-data folder.")
         info.setObjectName('mutedLabel'); info.setWordWrap(True); packaging.body_layout.addWidget(info)
         package_actions=QHBoxLayout(); import_package=QPushButton('Import .oder…'); import_package.clicked.connect(self.import_directory_requested.emit); package_actions.addWidget(import_package)
         compare_package=QPushButton('Compare two .oder files…'); compare_package.clicked.connect(self.compare_packages_requested.emit); package_actions.addWidget(compare_package)
@@ -614,10 +659,35 @@ class SettingsPage(QWidget):
                 self.color_fields[name].set_color(value)
         self.theme.setCurrentIndex(self.theme.findData('custom'))
 
+    def _check_now(self):
+        self.set_update_status('Checking GitHub for updates…')
+        self.check_updates_requested.emit(self.update_channel.currentData() or 'stable')
+
+    def _clear_skipped_update(self):
+        save_settings({'skipped_update_version': None})
+        self._settings['skipped_update_version'] = None
+        self.clear_skipped.setEnabled(False)
+        self.set_update_status('Skipped-version preference cleared.')
+        self.skipped_update_cleared.emit()
+
+    def set_update_status(self, message=None):
+        if message:
+            self.update_status.setText(message)
+            return
+        current = load_settings()
+        last = current.get('last_update_check_at')
+        if last:
+            last_text = str(last).replace('T', ' ').replace('+00:00', ' UTC')
+        else:
+            last_text = 'Never'
+        skipped = current.get('skipped_update_version')
+        suffix = f" · Skipping {skipped}" if skipped else ''
+        self.update_status.setText(f"Last checked: {last_text}{suffix}")
+
     def reset(self):
         self.download_dir.setText(downloads_root()); self.dl_concurrency.setValue(2); self.dl_delay.setValue(0.5); self.overwrite_downloads.setChecked(True)
         self.timeout.setValue(20); self.max_connections.setValue(12); self.backoff.setValue(60); self.user_agent.setText(f'ODeR/{APP_VERSION}'); self.external_browser.setChecked(True); self.follow_redirects.setChecked(True)
-        idx=self.theme.findData('dark'); self.theme.setCurrentIndex(idx if idx >= 0 else 0); self.remember_sidebar.setChecked(False); self.lazy.setChecked(True); self.startup_check.setChecked(True); self.startup_init.setChecked(True); self.confirm_full.setChecked(True); self.resume_startup.setChecked(False); self.notify_changes.setChecked(True); self.stale_days.setValue(7); self.page_size.setValue(500)
+        idx=self.theme.findData('dark'); self.theme.setCurrentIndex(idx if idx >= 0 else 0); self.remember_sidebar.setChecked(False); self.lazy.setChecked(True); self.startup_check.setChecked(True); self.startup_init.setChecked(True); self.confirm_full.setChecked(True); self.resume_startup.setChecked(False); self.notify_changes.setChecked(True); self.stale_days.setValue(7); self.page_size.setValue(500); self.auto_updates.setChecked(True); self.update_channel.setCurrentIndex(self.update_channel.findData('stable'))
         defaults=THEME_PRESETS['dark']
         for k,v in defaults.items(): self.color_fields[k].set_color(v)
 
@@ -627,7 +697,7 @@ class SettingsPage(QWidget):
             bad=[k for k,v in colors.items() if not _normalize_hex(v)]
             if bad: QMessageBox.warning(self,'Invalid theme color',f"These colors are not valid #RRGGBB values: {', '.join(bad)}"); return
             colors={k:_normalize_hex(v) for k,v in colors.items()}
-        vals={'download_dir':self.download_dir.text().strip(),'download_concurrency':self.dl_concurrency.value(),'download_start_delay':self.dl_delay.value(),'skip_existing_downloads':self.overwrite_downloads.isChecked(),'request_timeout_seconds':self.timeout.value(),'network_max_connections':self.max_connections.value(),'network_backoff_seconds':self.backoff.value(),'user_agent':self.user_agent.text().strip(),'open_external_downloads_in_browser':self.external_browser.isChecked(),'follow_redirects':self.follow_redirects.isChecked(),'theme':theme,'custom_theme':colors,'sidebar_collapsed':False,'lazy_directory_browsing':self.lazy.isChecked(),'startup_check_directories':self.startup_check.isChecked(),'startup_initialize_caches':self.startup_init.isChecked(),'confirm_full_updates':self.confirm_full.isChecked(),'resume_crawls_at_startup':self.resume_startup.isChecked(),'notify_directory_changes':self.notify_changes.isChecked(),'incremental_stale_days':self.stale_days.value(),'browser_page_size':self.page_size.value()}
+        vals={'download_dir':self.download_dir.text().strip(),'download_concurrency':self.dl_concurrency.value(),'download_start_delay':self.dl_delay.value(),'skip_existing_downloads':self.overwrite_downloads.isChecked(),'request_timeout_seconds':self.timeout.value(),'network_max_connections':self.max_connections.value(),'network_backoff_seconds':self.backoff.value(),'user_agent':self.user_agent.text().strip(),'open_external_downloads_in_browser':self.external_browser.isChecked(),'follow_redirects':self.follow_redirects.isChecked(),'theme':theme,'custom_theme':colors,'sidebar_collapsed':False,'lazy_directory_browsing':self.lazy.isChecked(),'startup_check_directories':self.startup_check.isChecked(),'startup_initialize_caches':self.startup_init.isChecked(),'confirm_full_updates':self.confirm_full.isChecked(),'resume_crawls_at_startup':self.resume_startup.isChecked(),'notify_directory_changes':self.notify_changes.isChecked(),'incremental_stale_days':self.stale_days.value(),'browser_page_size':self.page_size.value(),'automatic_update_checks':self.auto_updates.isChecked(),'update_channel':self.update_channel.currentData() or 'stable'}
         save_settings(vals); self.settings_changed.emit(); QMessageBox.information(self,'Settings saved','Settings saved. Theme and sidebar changes are applied immediately; network/download defaults apply to new work and background workers.')
 
 
@@ -1021,6 +1091,10 @@ class MainWindow(QMainWindow):
         self._search_timer.setInterval(250)
         self._search_timer.timeout.connect(self._run_search)
         self._package_tasks = {}
+        self._available_update = None
+        self._update_check_task = None
+        self._update_download_task = None
+        self._install_when_idle_path = None
 
         root = QWidget()
         root_layout = QHBoxLayout(root)
@@ -1109,6 +1183,18 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(self.stack, 1)
         self.setCentralWidget(root)
 
+        self.update_progress = QProgressBar()
+        self.update_progress.setMinimumWidth(150)
+        self.update_progress.setMaximumWidth(220)
+        self.update_progress.setTextVisible(True)
+        self.update_progress.hide()
+        self.update_cancel_button = QPushButton("Cancel update")
+        self.update_cancel_button.setObjectName("smallActionButton")
+        self.update_cancel_button.clicked.connect(self._cancel_update_download)
+        self.update_cancel_button.hide()
+        self.statusBar().addPermanentWidget(self.update_progress)
+        self.statusBar().addPermanentWidget(self.update_cancel_button)
+
         self.downloads = None
         self.settings = None
         self.search_page = None
@@ -1157,6 +1243,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Ready · ODeR")
         if load_settings().get("resume_crawls_at_startup", False):
             QTimer.singleShot(800, self._resume_startup_crawls)
+        QTimer.singleShot(3000, self._maybe_check_updates)
+        QApplication.instance().aboutToQuit.connect(self._cancel_update_download)
 
     def _apply_settings_style(self):
         settings=load_settings(); theme=settings.get("theme","dark")
@@ -1171,6 +1259,267 @@ class MainWindow(QMainWindow):
         if hasattr(self,"home"):
             self.home.refresh(load_profiles())
 
+    # ---------- application updates ----------
+
+    def _runtime_update_mode(self):
+        if not getattr(sys, "frozen", False):
+            return "source"
+        return "portable" if is_portable() else "installed"
+
+    def _settings_changed(self):
+        self._apply_settings_style()
+        if self.settings is not None:
+            self.settings.set_update_status()
+        settings = load_settings()
+        if (getattr(sys, "frozen", False)
+                and settings.get("automatic_update_checks", True)
+                and updater.should_check(settings.get("last_update_check_at"))):
+            QTimer.singleShot(500, self._maybe_check_updates)
+
+    def _maybe_check_updates(self):
+        settings = load_settings()
+        if not getattr(sys, "frozen", False):
+            return
+        if not settings.get("automatic_update_checks", True):
+            return
+        if updater.should_check(settings.get("last_update_check_at")):
+            self._check_for_updates(manual=False, channel=settings.get("update_channel", "stable"))
+
+    def _check_for_updates(self, manual=False, channel=None):
+        if self._update_check_task is not None and self._update_check_task.isRunning():
+            if manual:
+                self.statusBar().showMessage("An update check is already running…")
+            return
+        channel = channel or load_settings().get("update_channel", "stable")
+        mode = self._runtime_update_mode()
+        if self.settings is not None:
+            self.settings.set_update_status("Checking GitHub for updates…")
+        if manual:
+            self.statusBar().showMessage("Checking GitHub for updates…")
+        task = UpdateCheckTask(APP_VERSION, channel, mode == "portable", self)
+        self._update_check_task = task
+        task.update_found.connect(lambda info, m=manual: self._update_found(info, m))
+        task.no_update.connect(lambda m=manual: self._no_update_found(m))
+        task.failed.connect(lambda message, m=manual: self._update_check_failed(message, m))
+        task.finished.connect(lambda t=task: self._update_check_finished(t))
+        task.start()
+
+    def _mark_update_checked(self):
+        save_settings({"last_update_check_at": updater.checked_timestamp()})
+
+    def _update_found(self, info, manual):
+        self._mark_update_checked()
+        self._available_update = info
+        skipped = load_settings().get("skipped_update_version")
+        if skipped == info.version and not manual:
+            if self.settings is not None:
+                self.settings.set_update_status(f"ODeR {info.version} is available and currently skipped.")
+            return
+        self._broadcast_update_banner(info)
+        if self.settings is not None:
+            self.settings.set_update_status(f"ODeR {info.version} is available.")
+        self.statusBar().showMessage(f"ODeR {info.version} is available")
+        applog.log(f"Update available: ODeR {info.version} ({info.channel})")
+        if manual:
+            self._show_update_dialog()
+        else:
+            tray = getattr(self, "tray_icon", None)
+            if tray is not None:
+                tray.showMessage(
+                    "ODeR update available",
+                    f"Version {info.version} is ready to download.",
+                    msecs=6000,
+                )
+
+    def _no_update_found(self, manual):
+        self._mark_update_checked()
+        self._available_update = None
+        self._broadcast_update_banner(None)
+        if self.settings is not None:
+            self.settings.set_update_status(f"ODeR {APP_VERSION} is up to date.")
+        self.statusBar().showMessage(f"ODeR {APP_VERSION} is up to date")
+        if manual:
+            QMessageBox.information(self, "No updates available", f"ODeR {APP_VERSION} is the newest release on this channel.")
+
+    def _update_check_failed(self, message, manual):
+        applog.log(f"Update check failed: {message}")
+        if self.settings is not None:
+            self.settings.set_update_status(f"Update check failed: {message}")
+        if manual:
+            QMessageBox.warning(self, "Update check failed", message)
+
+    def _update_check_finished(self, task):
+        if self._update_check_task is task:
+            self._update_check_task = None
+        task.deleteLater()
+
+    def _broadcast_update_banner(self, info):
+        for widget in list(self._pages.values()):
+            if isinstance(widget, HomePage):
+                if info is None:
+                    widget.clear_update()
+                else:
+                    widget.show_update(info)
+
+    def _restore_update_banner(self):
+        if self._available_update is not None:
+            self._broadcast_update_banner(self._available_update)
+            self.statusBar().showMessage(f"ODeR {self._available_update.version} is available")
+
+    def _show_update_dialog(self):
+        info = self._available_update
+        if info is None:
+            self._check_for_updates(manual=True)
+            return
+        mode = self._runtime_update_mode()
+        dialog = UpdateDialog(info, mode=mode, parent=self)
+        dialog.exec()
+        if dialog.action == "skip":
+            save_settings({"skipped_update_version": info.version})
+            self._broadcast_update_banner(None)
+            if self.settings is not None:
+                self.settings.clear_skipped.setEnabled(True)
+                self.settings.set_update_status(f"ODeR {info.version} will be skipped.")
+            self.statusBar().showMessage(f"Skipped ODeR {info.version}")
+        elif dialog.action == "view":
+            QDesktopServices.openUrl(QUrl(info.page_url))
+        elif dialog.action == "download":
+            self._start_update_download(info)
+
+    def _start_update_download(self, info):
+        if self._update_download_task is not None and self._update_download_task.isRunning():
+            self.statusBar().showMessage("An update download is already running…")
+            return
+        self.update_progress.setRange(0, 100)
+        self.update_progress.setValue(0)
+        self.update_progress.setFormat("Starting…")
+        self.update_progress.show()
+        self.update_cancel_button.show()
+        self.statusBar().showMessage(f"Downloading ODeR {info.version}…")
+        task = UpdateDownloadTask(info, self)
+        self._update_download_task = task
+        task.progress_changed.connect(self._update_download_progress)
+        task.download_complete.connect(lambda path, i=info: self._update_download_complete(i, path))
+        task.failed.connect(self._update_download_failed)
+        task.canceled.connect(self._update_download_canceled)
+        task.finished.connect(lambda t=task: self._update_download_finished(t))
+        task.start()
+
+    def _update_download_progress(self, done, total):
+        total = int(total or 0)
+        done = int(done or 0)
+        if total > 0:
+            percent = max(0, min(100, int(done * 100 / total)))
+            self.update_progress.setRange(0, 100)
+            self.update_progress.setValue(percent)
+            self.update_progress.setFormat(f"Update {percent}%")
+            self.statusBar().showMessage(f"Downloading update… {format_bytes(done)} of {format_bytes(total)}")
+        else:
+            self.update_progress.setRange(0, 0)
+            self.statusBar().showMessage(f"Downloading update… {format_bytes(done)}")
+
+    def _hide_update_progress(self):
+        self.update_progress.hide()
+        self.update_cancel_button.hide()
+
+    def _cancel_update_download(self):
+        task = self._update_download_task
+        if task is not None and task.isRunning():
+            task.cancel()
+            self.statusBar().showMessage("Canceling update download…")
+
+    def _update_download_complete(self, info, path):
+        self._hide_update_progress()
+        applog.log(f"Verified update downloaded: ODeR {info.version} -> {path}")
+        if self._runtime_update_mode() == "portable":
+            box = QMessageBox(self)
+            box.setWindowTitle("Portable update downloaded")
+            box.setIcon(QMessageBox.Information)
+            box.setText(f"ODeR {info.version} was downloaded and verified.")
+            box.setInformativeText("Extract the ZIP into a new folder, then move any data you want to keep or continue using the existing portable folder.")
+            open_folder = box.addButton("Open folder", QMessageBox.ActionRole)
+            box.addButton("Later", QMessageBox.RejectRole)
+            box.exec()
+            if box.clickedButton() is open_folder:
+                try:
+                    os.startfile(os.path.dirname(path))
+                except OSError as exc:
+                    QMessageBox.warning(self, "Could not open folder", str(exc))
+            self.statusBar().showMessage(f"Portable update downloaded: {path}")
+        else:
+            self._request_installer_launch(path, info.version)
+
+    def _update_download_failed(self, message):
+        self._hide_update_progress()
+        applog.log(f"Update download failed: {message}")
+        QMessageBox.critical(self, "Update download failed", message)
+        self.statusBar().showMessage("Update download failed")
+
+    def _update_download_canceled(self):
+        self._hide_update_progress()
+        applog.log("Update download canceled")
+        self.statusBar().showMessage("Update download canceled")
+
+    def _update_download_finished(self, task):
+        if self._update_download_task is task:
+            self._update_download_task = None
+        task.deleteLater()
+
+    def _active_work_counts(self):
+        with self._crawl_status_lock:
+            crawls = sum(1 for state in self._crawl_status.values() if state.get("running"))
+        try:
+            downloads = sum(
+                1 for item in downloader.load_queue()
+                if item.get("status") in {"pending", "downloading"}
+            )
+        except (OSError, ValueError):
+            downloads = 0
+        return crawls, downloads
+
+    def _request_installer_launch(self, path, version):
+        crawls, downloads = self._active_work_counts()
+        if crawls or downloads:
+            parts = []
+            if crawls:
+                parts.append(f"{crawls} crawl{'s' if crawls != 1 else ''}")
+            if downloads:
+                parts.append(f"{downloads} queued or active download{'s' if downloads != 1 else ''}")
+            box = QMessageBox(self)
+            box.setWindowTitle("Finish active work before updating")
+            box.setIcon(QMessageBox.Information)
+            box.setText("ODeR will install the update when background work is idle.")
+            box.setInformativeText(f"Currently active: {', '.join(parts)}. ODeR will remain open until they finish.")
+            install_idle = box.addButton("Install when idle", QMessageBox.AcceptRole)
+            box.addButton("Later", QMessageBox.RejectRole)
+            box.exec()
+            if box.clickedButton() is install_idle:
+                self._install_when_idle_path = path
+                self.statusBar().showMessage(f"ODeR {version} will install when background work is idle")
+            return
+        answer = QMessageBox.question(
+            self,
+            "Install ODeR update",
+            f"ODeR {version} was downloaded and verified. Close ODeR and start the installer now?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if answer == QMessageBox.Yes:
+            self._launch_installer(path)
+
+    def _launch_installer(self, path):
+        if not os.path.isfile(path):
+            QMessageBox.warning(self, "Installer not found", "The downloaded installer is no longer available. Check for updates again.")
+            return
+        try:
+            os.startfile(path)
+        except OSError as exc:
+            QMessageBox.critical(self, "Could not start installer", str(exc))
+            return
+        applog.log(f"Launching verified update installer: {path}")
+        downloader.stop_background_worker()
+        QApplication.instance().quit()
+
     # ---------- tabs ----------
 
     def _make_home_page(self):
@@ -1181,6 +1530,9 @@ class MainWindow(QMainWindow):
         page.import_directory_requested.connect(self._import_profile_package)
         page.open_downloads_requested.connect(lambda: self._show_special("downloads"))
         page.open_settings_requested.connect(lambda: self._show_special("settings"))
+        page.update_requested.connect(self._show_update_dialog)
+        if self._available_update and load_settings().get('skipped_update_version') != self._available_update.version:
+            page.show_update(self._available_update)
         return page
 
     def _make_search_page(self):
@@ -1391,7 +1743,11 @@ class MainWindow(QMainWindow):
             self._rebuild_tab_bar()
         elif key == "settings" and self.settings is None:
             self.settings = SettingsPage()
-            self.settings.settings_changed.connect(self._apply_settings_style)
+            self.settings.settings_changed.connect(self._settings_changed)
+            self.settings.check_updates_requested.connect(
+                lambda channel: self._check_for_updates(manual=True, channel=channel)
+            )
+            self.settings.skipped_update_cleared.connect(self._restore_update_banner)
             self.settings.import_directory_requested.connect(self._import_profile_package)
             self.settings.compare_packages_requested.connect(self._compare_package_files)
             self.settings.open_storage_requested.connect(lambda: self._show_special("storage"))
@@ -1997,6 +2353,13 @@ class MainWindow(QMainWindow):
                     self.storage.refresh()
             elif st.get("running"):
                 self.statusBar().showMessage(f"Updating {widget.profile['name']}… {st.get('crawled', 0):,} folders · {st.get('rate', 0):.1f}/s · {st.get('workers', 1)} workers · {st.get('queued', 0):,} queued")
+
+        if self._install_when_idle_path:
+            crawls, downloads = self._active_work_counts()
+            if not crawls and not downloads:
+                path = self._install_when_idle_path
+                self._install_when_idle_path = None
+                QTimer.singleShot(0, lambda p=path: self._launch_installer(p))
 
     def _refresh_current(self):
         widget = self._pages.get(self._current_key)
