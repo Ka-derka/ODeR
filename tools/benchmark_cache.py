@@ -65,14 +65,21 @@ def main():
                 lambda: cache.get_children(profile_id, base_url, limit=500),
             )
             matches, _ = timed("search cache", lambda: cache.search(profile_id, "file", limit=500))
+            descendants, _ = timed(
+                "expand download folder",
+                lambda: cache.descendant_files(profile_id, base_url),
+            )
             run_id, _ = timed(
                 "folder snapshot start",
                 lambda: cache.begin_snapshot(profile_id, "folder", base_url),
             )
             timed("folder snapshot finish", lambda: cache.finish_snapshot(profile_id, run_id))
+            timed("full-update checkpoint", lambda: cache.begin_full_update(profile_id))
+            timed("checkpoint rollback", lambda: cache.rollback_full_update(profile_id))
             print(
                 f"verified: {summary['entries']:,} rows, "
-                f"{len(page):,}-row page, {len(matches):,} search results"
+                f"{len(page):,}-row page, {len(matches):,} search results, "
+                f"{len(descendants):,} downloadable descendants"
             )
         finally:
             cache._SCHEMA_READY.discard(profile_id)

@@ -17,7 +17,7 @@ from PySide6.QtCore import Qt, QTimer, Signal, Slot, QThread, QStandardPaths, QU
 from PySide6.QtGui import QShortcut, QKeySequence, QColor, QDesktopServices
 
 from core.profiles import load_profiles, create_profile, update_profile, delete_profile, get_profile
-from core import cache, library, crawl_state, updater
+from core import cache, diagnostics, library, crawl_state, updater
 from core.crawl import crawl_profile, crawl_folder
 from core import downloader
 from core import applog
@@ -629,7 +629,9 @@ class SettingsPage(QWidget):
         self.download_dir=QLineEdit(self._settings.get('download_dir',downloads_root())); browse=QPushButton("Browse…"); row=QHBoxLayout(); row.addWidget(self.download_dir,1); row.addWidget(browse); browse.clicked.connect(self._browse_downloads); sf.addRow("Download directory",row)
         self.dl_concurrency=QSpinBox(); self.dl_concurrency.setRange(1,64); self.dl_concurrency.setValue(int(self._settings.get('download_concurrency',2))); sf.addRow("Global download concurrency",self.dl_concurrency)
         self.dl_delay=QDoubleSpinBox(); self.dl_delay.setRange(0,60); self.dl_delay.setDecimals(2); self.dl_delay.setSuffix(' s'); self.dl_delay.setValue(float(self._settings.get('download_start_delay',0.5))); sf.addRow("Delay between download starts",self.dl_delay)
-        self.overwrite_downloads=QCheckBox("Keep existing completed files and skip them"); self.overwrite_downloads.setChecked(bool(self._settings.get('skip_existing_downloads',True))); sf.addRow(self.overwrite_downloads); form.addWidget(storage)
+        self.overwrite_downloads=QCheckBox("Keep existing completed files and skip them"); self.overwrite_downloads.setChecked(bool(self._settings.get('skip_existing_downloads',True))); sf.addRow(self.overwrite_downloads)
+        structure_hint=QLabel("Downloads are stored beneath a folder for each directory and automatically recreate the source folder hierarchy. Unsafe Windows path characters and name collisions are handled without flattening the rest of the structure."); structure_hint.setObjectName('mutedLabel'); structure_hint.setWordWrap(True); sf.addRow('Folder structure',structure_hint)
+        form.addWidget(storage)
 
         network=CollapsibleSection("Networking", "timeouts, rate limits and browser fallback", True, layout_type="form"); nf=network.body_layout
         self.timeout=QSpinBox(); self.timeout.setRange(1,600); self.timeout.setSuffix(' s'); self.timeout.setValue(int(self._settings.get('request_timeout_seconds',20))); nf.addRow('Request timeout',self.timeout)
@@ -1987,6 +1989,7 @@ class MainWindow(QMainWindow):
             self._rebuild_tab_bar()
         elif key == "logs" and self.logs is None:
             self.logs = LogsPage()
+            self.logs.export_diagnostics_requested.connect(self._export_diagnostics)
             self._add_page("logs", "Logs", "", self.logs, closable=True)
             self._rebuild_tab_bar()
         elif key == "favorites" and self.favorites is None:
@@ -2022,12 +2025,72 @@ class MainWindow(QMainWindow):
             browser.incremental_update_requested.connect(lambda pid=profile_id: self._start_crawl_for(pid, "incremental"))
             browser.resume_update_requested.connect(lambda pid=profile_id: self._start_crawl_for(pid, "resume"))
             browser.export_subtree_requested.connect(lambda url, pid=profile_id: self._export_profile(pid, url))
+            browser.download_folder_requested.connect(
+                lambda url, pid=profile_id: self._queue_folder_download(pid, url)
+            )
             browser.favorite_added.connect(self._favorites_changed)
             browser.open_downloads_requested.connect(lambda: self._show_special("downloads"))
             self._add_page(key, profile["name"], "", browser, closable=True)
             self._rebuild_tab_bar()
         self._select_key(key)
         self.statusBar().showMessage(f"Opened {profile['name']}")
+
+    def _queue_folder_download(self, profile_id, folder_url):
+        profile = get_profile(profile_id)
+        if not profile:
+            return
+        folder = cache.get_node(profile_id, folder_url) or {}
+        folder_name = folder.get("name") or "folder"
+        group = downloader.new_group(f"{profile['name']} — {folder_name}")
+        base_url = cache.get_base_url(profile_id) or profile["base_url"]
+
+        def operation():
+            rows = cache.descendant_files(profile_id, folder_url)
+            entries = (
+                {
+                    "url": row["url"],
+                    "name": row["name"],
+                    "rel_path": downloader.source_relative_directory(
+                        base_url, row.get("parent_url")
+                    ),
+                }
+                for row in rows
+            )
+            result = downloader.enqueue_many(
+                profile_id,
+                profile["name"],
+                entries,
+                group_id=group["id"],
+                group_name=group["name"],
+            )
+            return {
+                "total": len(rows),
+                "added": result["added"],
+                "reused": result["reused"],
+                "folder": folder_name,
+            }
+
+        self._start_package_task(
+            f"Preparing structured downloads for {folder_name}…",
+            operation,
+            self._folder_download_queued,
+            error_title="Folder download could not be prepared",
+        )
+
+    def _folder_download_queued(self, result):
+        total = int(result.get("total", 0))
+        if not total:
+            QMessageBox.information(
+                self, "Download folder", "This cached folder does not contain any files."
+            )
+            return
+        added = int(result.get("added", 0))
+        reused = int(result.get("reused", 0))
+        self._show_special("downloads")
+        message = f"Queued {added:,} file{'s' if added != 1 else ''} with their folder structure."
+        if reused:
+            message += f" {reused:,} already-active file{'s were' if reused != 1 else ' was'} kept."
+        self.statusBar().showMessage(message, 8000)
 
     def _reload_tabs(self, select_key=None):
         profiles = load_profiles()
@@ -2143,6 +2206,23 @@ class MainWindow(QMainWindow):
         self._show_special("search")
         if self.search_page is not None:
             self.search_page.apply_saved(saved)
+
+    def _export_diagnostics(self, destination, include_logs):
+        self._start_package_task(
+            "Checking saved data and creating diagnostics…",
+            lambda: diagnostics.export_report(destination, include_logs=include_logs),
+            self._diagnostics_exported,
+            error_title="Diagnostics export failed",
+        )
+
+    def _diagnostics_exported(self, destination):
+        self.statusBar().showMessage("Diagnostics package exported", 8000)
+        QMessageBox.information(
+            self,
+            "Diagnostics exported",
+            "The diagnostics package was created successfully.\n\n"
+            f"{destination}\n\nReview recent-log.txt before sharing if you chose to include logs.",
+        )
 
     # ---------- .oder packages ----------
 

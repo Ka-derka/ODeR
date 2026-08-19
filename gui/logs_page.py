@@ -4,17 +4,20 @@ import sys
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QPlainTextEdit,
-    QComboBox, QCheckBox
+    QComboBox, QCheckBox, QFileDialog, QMessageBox
 )
+from PySide6.QtCore import Signal
 from PySide6.QtGui import QTextCursor
 
-from core import applog
+from core import applog, diagnostics
 
 LEVELS = ["All", "INFO", "WARNING", "ERROR"]
 MAX_VISIBLE_LINES = 5000
 
 
 class LogsPage(QWidget):
+    export_diagnostics_requested = Signal(str, bool)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._last_seq = 0
@@ -45,6 +48,13 @@ class LogsPage(QWidget):
         toolbar.addWidget(self.autoscroll_check)
 
         toolbar.addStretch(1)
+
+        diagnostics_btn = QPushButton("Export diagnostics…")
+        diagnostics_btn.setToolTip(
+            "Create a support ZIP with versions, state schemas, anonymous cache counts, and health checks."
+        )
+        diagnostics_btn.clicked.connect(self._request_diagnostics_export)
+        toolbar.addWidget(diagnostics_btn)
 
         open_file_btn = QPushButton("Open log file")
         open_file_btn.clicked.connect(lambda: self._open_path(applog.log_file_path()))
@@ -129,6 +139,24 @@ class LogsPage(QWidget):
         self.text.clear()
         self._all_lines = []
         # keep _last_seq as-is so poll_new() only shows lines from this point on
+
+    def _request_diagnostics_export(self):
+        choice = QMessageBox.question(
+            self,
+            "Include recent logs?",
+            "The diagnostics report itself excludes directory names, URLs, file names, and cached contents.\n\n"
+            "Recent logs are more useful for troubleshooting, but they can contain directory URLs and file names. Include them?",
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+            QMessageBox.No,
+        )
+        if choice == QMessageBox.Cancel:
+            return
+        suggested = os.path.join(os.path.expanduser("~"), diagnostics.suggested_filename())
+        destination, _selected = QFileDialog.getSaveFileName(
+            self, "Export ODeR diagnostics", suggested, "ZIP archives (*.zip)"
+        )
+        if destination:
+            self.export_diagnostics_requested.emit(destination, choice == QMessageBox.Yes)
 
     def _open_path(self, path):
         if not os.path.exists(path):

@@ -44,6 +44,24 @@ class PersistenceTests(unittest.TestCase):
             with open(path, "r", encoding="utf-8") as handle:
                 self.assertEqual(json.load(handle), future)
 
+    def test_download_queue_schema_two_pins_legacy_destination(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            path = os.path.join(temporary_dir, "queue.json")
+            version_one = {
+                "format": "oder-state", "kind": "download-queue", "schema_version": 1,
+                "written_by": "0.20.0", "data": [{
+                    "id": "q", "profile_name": "Site", "name": "file.mkv",
+                    "rel_path": "Season%201", "url": "https://x/Season%201/file.mkv",
+                }],
+            }
+            save_json(path, version_one)
+            queue = load_document(path, "download-queue", [], list)
+            self.assertEqual(
+                queue[0]["destination_rel_path"], "Site/Season%201/file.mkv"
+            )
+            with open(path, "r", encoding="utf-8") as handle:
+                self.assertEqual(json.load(handle)["schema_version"], 2)
+
     def test_corrupt_primary_is_restored_from_last_known_good_backup(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
             path = os.path.join(temporary_dir, "state.json")

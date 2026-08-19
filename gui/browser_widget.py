@@ -100,6 +100,7 @@ class BrowserWidget(QWidget):
     incremental_update_requested = Signal()
     resume_update_requested = Signal()
     export_subtree_requested = Signal(str)
+    download_folder_requested = Signal(str)
     favorite_added = Signal()
     open_downloads_requested = Signal()
 
@@ -476,11 +477,19 @@ class BrowserWidget(QWidget):
             url = item.data(0, Qt.UserRole)
             node = cache.get_node(self.profile["id"], url) if self.profile else None
             if node and not node.get("is_dir"):
-                selected.append((url, node["name"]))
+                selected.append({
+                    "url": url,
+                    "name": node["name"],
+                    "rel_path": self._relative_to_current(
+                        node.get("parent_url") or self.current_url
+                    ),
+                })
         group = downloader.new_group(f"{self.profile['name']} — selected files") if selected else None
-        for url, name in selected:
-            self._download(url, name, open_after=False, group=group)
         if selected:
+            downloader.enqueue_many(
+                self.profile["id"], self.profile["name"], selected,
+                group_id=group["id"], group_name=group["name"],
+            )
             self.open_downloads_requested.emit()
 
     def _context_menu(self, pos):
@@ -539,15 +548,10 @@ class BrowserWidget(QWidget):
     def _download_folder(self, folder_url):
         if not self.profile:
             return
-        rows = cache.descendant_files(self.profile["id"], folder_url)
-        folder = cache.get_node(self.profile["id"], folder_url) or {}
-        group = downloader.new_group(f"{self.profile['name']} — {folder.get('name') or 'folder'}")
-        for row in rows:
-            rel = self._relative_to_current(row.get("parent_url"))
-            downloader.enqueue(self.profile["id"], self.profile["name"], row["url"], row["name"], rel,
-                               group_id=group["id"], group_name=group["name"])
-        if rows:
-            self.open_downloads_requested.emit()
+        # Descendant expansion and the single batch queue write run outside
+        # the UI thread in MainWindow so very large folders do not freeze the
+        # browser while they are being prepared.
+        self.download_folder_requested.emit(folder_url)
 
     def _download(self, url, name, open_after=True, group=None):
         if not self.profile:

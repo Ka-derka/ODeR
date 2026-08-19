@@ -4,7 +4,7 @@
 
 ODeR is a PySide6 desktop application for indexing web directory listings, browsing the cached tree offline, tracking changes, and downloading selected files. Each directory keeps its own crawl and download settings, while the local SQLite index remains fast enough for large archives.
 
-Current version: **0.20.0**
+Current version: **0.21.0**
 
 ## Highlights
 
@@ -13,7 +13,7 @@ Current version: **0.20.0**
 - Search locally with SQLite FTS5 plus site, type, size, file, and folder filters.
 - Review snapshots of new, removed, and changed entries.
 - Save favorite folders and reusable searches.
-- Queue individual files or expandable download groups with speed and ETA.
+- Queue individual files or expandable download groups with speed and ETA while recreating the directory's original folder hierarchy on disk.
 - Import, export, validate, and compare versioned `.oder` directory packages.
 - Export either a complete directory or a selected subtree.
 - Manage, repair, compact, or clear cached indexes without touching downloads.
@@ -22,6 +22,7 @@ Current version: **0.20.0**
 - Keep one ODeR instance per Windows user and forward `.oder` files to the running window.
 - Keep browsing, Home, Activity, and Downloads responsive while large indexes are updated.
 - Discover and load a directory-hosted full `.oder` index instead of crawling every folder.
+- Export a privacy-conscious diagnostics ZIP with schema, cache-health, and runtime information when troubleshooting.
 
 ## Requirements
 
@@ -52,7 +53,7 @@ python -m compileall -q core gui main.py
 python -m unittest discover -s tests -v
 ```
 
-The repository includes tests for cache paging and search, snapshots, crawl recovery, state migrations, representative web-server directory listings, concurrent WAL reads, stable live UI updates, grouped downloads, favorites, hosted `.oder` discovery and conditional refreshes, package validation, subtree exports, conflict handling, package comparison, update selection, and verified update downloads. GitHub Actions runs the suite on Linux and Windows and smoke-builds the Windows portable executable. A configurable 100,000-entry cache benchmark is available at `tools/benchmark_cache.py`.
+The repository includes tests for cache paging and search, snapshots, crawl recovery, state migrations, structured and collision-safe download paths, diagnostics privacy and cache health, representative web-server directory listings, concurrent WAL reads, stable live UI updates, grouped downloads, favorites, hosted `.oder` discovery and conditional refreshes, package validation, subtree exports, conflict handling, package comparison, update selection, and verified update downloads. GitHub Actions runs the suite on Linux and Windows and smoke-builds the Windows portable executable. A configurable 100,000-entry cache benchmark is available at `tools/benchmark_cache.py`.
 
 ## Build for Windows
 
@@ -86,6 +87,24 @@ Portable builds use the same release notification interface but download `ODeR-P
 Settings, profiles, favorites, package history, crawl state, and the download queue use versioned schemas and are written atomically with a last-known-good backup. Legacy state is migrated before the UI starts. If a JSON state file is truncated or damaged, ODeR restores its backup and preserves the damaged copy for diagnosis. Newer unsupported state is left untouched and startup explains that a newer ODeR version is required.
 
 Invalid SQLite directory caches are similarly preserved before an empty rebuildable cache is created. A cache from a newer unsupported schema is never downgraded or overwritten. Full crawls and hosted `.oder` replacements are checkpointed: ODeR commits the new index only when the whole operation succeeds, and restores the last working index after a stop, failure, or interrupted process. See [DATA_COMPATIBILITY.md](DATA_COMPATIBILITY.md) for the compatibility contract.
+
+## Structured downloads
+
+Every new download receives a stable destination beneath the configured download directory:
+
+```text
+<download directory>/<ODeR directory name>/<source folders>/<file name>
+```
+
+For example, `Season%201/English/episode.mkv` from a directory named `Archive` is saved as `Archive/Season 1/English/episode.mkv`. Folder batches and selected-file batches retain the same hierarchy. ODeR safely normalizes Windows-reserved names, control characters, traversal components, and overly long components; distinct sources that normalize to the same path receive numbered filenames instead of overwriting one another. Existing completed files are kept when that preference is enabled.
+
+Queue schema 2 pins the chosen relative destination so directory renames or future path-normalization improvements cannot move an active or completed queue item. Queues created by ODeR 0.20 are migrated while preserving their previous on-disk locations.
+
+## Diagnostics
+
+Use **Logs → Export diagnostics** to create a support ZIP. The main JSON report includes ODeR, Python, and operating-system versions; state-file schemas; anonymous cache counts; SQLite integrity and schema results; checkpoint state; and download status totals. It excludes tracked directory names and URLs, download names, cache contents, and downloaded files.
+
+Recent logs can be included explicitly. Because log messages can contain directory URLs and filenames, ODeR asks before adding them and places a privacy reminder inside the package.
 
 ## `.oder` package format
 

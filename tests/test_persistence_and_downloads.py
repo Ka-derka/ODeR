@@ -63,6 +63,81 @@ class PersistenceAndDownloadTests(unittest.TestCase):
         self.assertEqual(recovered["bytes_done"], 1024)
         self.assertEqual(recovered["speed_bps"], 0.0)
 
+    def test_download_destination_recreates_decoded_source_folders(self):
+        root = os.path.join(self.temp.name, "downloads")
+        with patch.object(downloader, "load_settings", return_value={"download_dir": root}):
+            item = downloader.enqueue(
+                "p", "Anime: Archive", "https://x/Season%201/Sub/episode.mkv",
+                "episode?.mkv", "Season%201/Sub",
+            )
+            expected = os.path.join(
+                root, "Anime Archive", "Season 1", "Sub", "episode.mkv"
+            )
+            self.assertEqual(downloader.destination_path(item), expected)
+            self.assertFalse(os.path.exists(os.path.dirname(expected)))
+
+    def test_structured_paths_handle_traversal_reserved_names_and_collisions(self):
+        root = os.path.join(self.temp.name, "downloads")
+        with patch.object(downloader, "load_settings", return_value={"download_dir": root}):
+            first = downloader.enqueue(
+                "p", "Site", "https://x/one", "a:b.txt", "../CON/%2e%2e/Safe%20Folder"
+            )
+            second = downloader.enqueue(
+                "p", "Site", "https://x/two", "ab.txt", "../CON/%2e%2e/Safe%20Folder"
+            )
+            self.assertEqual(
+                first["destination_rel_path"], "Site/_CON/Safe Folder/ab.txt"
+            )
+            self.assertEqual(
+                second["destination_rel_path"], "Site/_CON/Safe Folder/ab (2).txt"
+            )
+            for item in (first, second):
+                self.assertEqual(
+                    os.path.commonpath((root, downloader.destination_path(item))), root
+                )
+
+    def test_batch_enqueue_writes_queue_once(self):
+        entries = [
+            {"url": f"https://x/folder/{number}.bin", "name": f"{number}.bin", "rel_path": "folder"}
+            for number in range(2000)
+        ]
+        with (
+            patch.object(downloader, "load_queue", return_value=[]),
+            patch.object(downloader, "save_queue") as save_queue,
+        ):
+            result = downloader.enqueue_many("p", "Site", entries)
+        self.assertEqual(result["added"], 2000)
+        save_queue.assert_called_once()
+        self.assertEqual(len(save_queue.call_args.args[0]), 2000)
+
+    def test_existing_completed_file_is_kept_without_network_request(self):
+        root = os.path.join(self.temp.name, "downloads")
+        settings = {"download_dir": root, "skip_existing_downloads": True}
+        with patch.object(downloader, "load_settings", return_value=settings):
+            item = downloader.enqueue("p", "Site", "https://x/file.bin", "file.bin", "folder")
+            destination = downloader._dest_path(item, create=True)
+            with open(destination, "wb") as handle:
+                handle.write(b"existing")
+            with patch.object(downloader.requests, "get", side_effect=AssertionError("network should not be used")):
+                downloader._download_one(item, {}, lambda _message: None)
+        stored = downloader.load_queue()[0]
+        self.assertEqual(stored["status"], "done")
+        self.assertEqual(stored["result"], "existing")
+        self.assertEqual(stored["bytes_done"], 8)
+
+    def test_source_relative_directory_rejects_other_origins_and_siblings(self):
+        base = "https://example.test/media/"
+        self.assertEqual(
+            downloader.source_relative_directory(base, base + "Season%201/Sub/"),
+            "Season%201/Sub",
+        )
+        self.assertEqual(
+            downloader.source_relative_directory(base, "https://example.test/media-other/"), ""
+        )
+        self.assertEqual(
+            downloader.source_relative_directory(base, "https://other.test/media/folder/"), ""
+        )
+
     def test_folder_and_saved_search_favorites(self):
         first = library.add_folder("p", "https://x/folder/", "Folder")
         duplicate = library.add_folder("p", "https://x/folder/", "Folder")

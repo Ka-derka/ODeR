@@ -10,13 +10,16 @@ else (pause, retry, remove) just edits queue.json; lanes notice on their
 next poll.
 """
 import os
+import hashlib
 import time
 import threading
+import unicodedata
 import uuid
 import requests
 from datetime import datetime, timezone
+from urllib.parse import unquote, urlsplit
 
-from core.paths import queue_path, downloads_dir
+from core.paths import queue_path
 from core.settings import load_settings, downloads_root
 from core.profiles import get_profile
 from core.state_schema import load_document, save_document
@@ -55,33 +58,155 @@ def new_group(name):
     return {"id": uuid.uuid4().hex[:12], "name": str(name or "Download group")}
 
 
-def enqueue(profile_id, profile_name, url, name, rel_path, group_id=None, group_name=None):
+_WINDOWS_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL", "CLOCK$",
+    *(f"COM{number}" for number in range(1, 10)),
+    *(f"LPT{number}" for number in range(1, 10)),
+}
+
+
+def _safe_component(value, fallback="item", *, decode=True):
+    original = str(value or "")
+    value = unquote(original) if decode else original
+    value = unicodedata.normalize("NFC", value)
+    value = "".join(
+        character for character in value
+        if character not in '<>:"/\\|?*' and ord(character) >= 32
+    )
+    value = value.strip().rstrip(" .")
+    if not value:
+        value = fallback
+    stem = value.split(".", 1)[0].upper()
+    if stem in _WINDOWS_RESERVED_NAMES:
+        value = "_" + value
+    if len(value) > 180:
+        suffix = hashlib.sha256(original.encode("utf-8", "replace")).hexdigest()[:10]
+        extension = os.path.splitext(value)[1][:20]
+        keep = max(1, 180 - len(extension) - len(suffix) - 2)
+        value = f"{value[:keep]}~{suffix}{extension}"
+    return value or fallback
+
+
+def _safe_relative_path(rel_path, *, decode=True):
+    parts = []
+    for raw in str(rel_path or "").replace("\\", "/").split("/"):
+        part = _safe_component(raw, "", decode=decode)
+        if part and part not in (".", ".."):
+            parts.append(part)
+    return parts
+
+
+def source_relative_directory(base_url, parent_url):
+    """Return a URL folder path relative to a directory root, if it is inside it."""
+    base = urlsplit(str(base_url or ""))
+    parent = urlsplit(str(parent_url or ""))
+    if (base.scheme.casefold(), base.netloc.casefold()) != (
+        parent.scheme.casefold(), parent.netloc.casefold()
+    ):
+        return ""
+    base_path = base.path if base.path.endswith("/") else base.path + "/"
+    if not parent.path.startswith(base_path):
+        return ""
+    return parent.path[len(base_path):].strip("/")
+
+
+def destination_relative_path(profile_name, rel_path, name):
+    parts = [_safe_component(profile_name, "profile")]
+    parts.extend(_safe_relative_path(rel_path))
+    parts.append(_safe_component(name, "download"))
+    return "/".join(parts)
+
+
+def _collision_name(relative_path, number):
+    parts = relative_path.replace("\\", "/").split("/")
+    stem, extension = os.path.splitext(parts[-1])
+    parts[-1] = f"{stem} ({number}){extension}"
+    return "/".join(parts)
+
+
+def _new_queue_item(profile_id, profile_name, entry, group_id, group_name, destination_rel_path):
+    return {
+        "id": uuid.uuid4().hex[:12],
+        "profile_id": profile_id,
+        "profile_name": profile_name,
+        "url": entry["url"],
+        "name": entry["name"],
+        "rel_path": entry.get("rel_path") or "",
+        "destination_rel_path": destination_rel_path,
+        "status": "pending",
+        "bytes_done": 0,
+        "bytes_total": None,
+        "error": None,
+        "group_id": group_id,
+        "group_name": group_name,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "speed_bps": 0.0,
+        "eta_seconds": None,
+    }
+
+
+def enqueue_many(profile_id, profile_name, entries, group_id=None, group_name=None):
+    """Queue a batch with one read/write and deterministic collision-free paths."""
     with _file_lock:
         items = load_queue()
-        for existing in items:
-            if existing.get("profile_id") == profile_id and existing.get("url") == url and existing.get("status") in {"pending", "downloading", "paused"}:
-                return existing
-        item = {
-            "id": uuid.uuid4().hex[:12],
-            "profile_id": profile_id,
-            "profile_name": profile_name,
-            "url": url,
-            "name": name,
-            "rel_path": rel_path,
-            "status": "pending",
-            "bytes_done": 0,
-            "bytes_total": None,
-            "error": None,
-            "group_id": group_id,
-            "group_name": group_name,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "speed_bps": 0.0,
-            "eta_seconds": None,
+        active = {
+            (item.get("profile_id"), item.get("url")): item
+            for item in items
+            if item.get("status") in {"pending", "downloading", "paused"}
         }
-        items.append(item)
-        save_queue(items)
-    applog.log(f"queued: {name} ({profile_name})")
-    return item
+        destinations = {}
+        for item in items:
+            relative = _item_relative_path(item)
+            if relative:
+                destinations.setdefault(relative.casefold(), item.get("url"))
+
+        result_items = []
+        added = 0
+        reused = 0
+        for raw in entries:
+            entry = dict(raw)
+            key = (profile_id, entry.get("url"))
+            if key in active:
+                result_items.append(active[key])
+                reused += 1
+                continue
+            relative = destination_relative_path(
+                profile_name, entry.get("rel_path", ""), entry.get("name", "download")
+            )
+            candidate = relative
+            number = 2
+            while (
+                candidate.casefold() in destinations
+                and destinations[candidate.casefold()] != entry.get("url")
+            ):
+                candidate = _collision_name(relative, number)
+                number += 1
+            item = _new_queue_item(
+                profile_id, profile_name, entry, group_id, group_name, candidate
+            )
+            items.append(item)
+            result_items.append(item)
+            active[key] = item
+            destinations[candidate.casefold()] = entry.get("url")
+            added += 1
+        if added:
+            save_queue(items)
+    if added == 1:
+        applog.log(f"queued: {result_items[-1]['name']} ({profile_name})")
+    elif added:
+        applog.log(f"queued {added} structured downloads ({profile_name})")
+    return {"items": result_items, "added": added, "reused": reused}
+
+
+def enqueue(profile_id, profile_name, url, name, rel_path, group_id=None, group_name=None):
+    result = enqueue_many(
+        profile_id,
+        profile_name,
+        [{"url": url, "name": name, "rel_path": rel_path}],
+        group_id,
+        group_name,
+    )
+    return result["items"][0]
 
 
 def update_item(item_id, **fields):
@@ -128,27 +253,62 @@ def items_in_group(group_id):
     return [item for item in load_queue() if item.get("group_id") == group_id]
 
 
+def _update_group(group_id, statuses, **fields):
+    with _file_lock:
+        items = load_queue()
+        changed = 0
+        for item in items:
+            if item.get("group_id") == group_id and item.get("status") in statuses:
+                item.update(fields)
+                changed += 1
+        if changed:
+            save_queue(items)
+        return changed
+
+
 def pause_group(group_id):
-    for item in items_in_group(group_id):
-        if item.get("status") in {"pending", "downloading"}:
-            pause_item(item["id"])
+    return _update_group(group_id, {"pending", "downloading"}, status="paused")
 
 
 def resume_group(group_id):
-    for item in items_in_group(group_id):
-        if item.get("status") == "paused":
-            resume_item(item["id"])
+    return _update_group(group_id, {"paused"}, status="pending")
 
 
 def retry_group(group_id):
-    for item in items_in_group(group_id):
-        if item.get("status") == "error":
-            retry_item(item["id"])
+    return _update_group(group_id, {"error"}, status="pending", error=None)
 
 
 def remove_group(group_id):
-    for item in list(items_in_group(group_id)):
-        remove_item(item["id"])
+    with _file_lock:
+        items = load_queue()
+        kept = [item for item in items if item.get("group_id") != group_id]
+        removed = len(items) - len(kept)
+        if removed:
+            save_queue(kept)
+        return removed
+
+
+def retry_failed():
+    with _file_lock:
+        items = load_queue()
+        changed = 0
+        for item in items:
+            if item.get("status") == "error":
+                item.update(status="pending", error=None)
+                changed += 1
+        if changed:
+            save_queue(items)
+        return changed
+
+
+def clear_completed():
+    with _file_lock:
+        items = load_queue()
+        kept = [item for item in items if item.get("status") != "done"]
+        removed = len(items) - len(kept)
+        if removed:
+            save_queue(kept)
+        return removed
 
 
 def summarize_group_items(items):
@@ -172,41 +332,53 @@ def group_summary(group_id):
     return summarize_group_items(items_in_group(group_id))
 
 
-def _safe_component(value, fallback="item"):
-    value = str(value or "")
-    value = "".join(c for c in value if c not in '<>:"/\\|?*')
-    value = value.strip().rstrip(" .")
-    return value or fallback
+def _item_relative_path(item):
+    stored = item.get("destination_rel_path")
+    if stored:
+        return "/".join(_safe_relative_path(stored, decode=False))
+    # Defensive fallback for a manually edited or partially migrated queue.
+    return destination_relative_path(
+        item.get("profile_name", "profile"),
+        item.get("rel_path", ""),
+        item.get("name", "download"),
+    )
 
 
-def _safe_relative_path(rel_path):
-    parts = []
-    for raw in str(rel_path or "").replace("\\", "/").split("/"):
-        part = _safe_component(raw, "")
-        if part and part not in (".", ".."):
-            parts.append(part)
-    return parts
-
-
-def _dest_path(profile_name, rel_path, name):
+def _download_root():
     global_dir = (load_settings().get("download_dir") or "").strip()
-    folder = os.path.abspath(global_dir) if global_dir else downloads_dir(profile_name)
-    if global_dir:
-        folder = os.path.join(folder, _safe_component(profile_name, "profile"))
-    safe_parts = _safe_relative_path(rel_path)
-    if safe_parts:
-        folder = os.path.join(folder, *safe_parts)
-    os.makedirs(folder, exist_ok=True)
-    return os.path.join(folder, _safe_component(name))
+    return os.path.abspath(os.path.expanduser(global_dir or downloads_root()))
+
+
+def _dest_path(item, *, create=False):
+    root = _download_root()
+    relative = _item_relative_path(item)
+    parts = _safe_relative_path(relative, decode=False)
+    if not parts:
+        parts = ["profile", "download"]
+    destination = os.path.abspath(os.path.join(root, *parts))
+    if os.path.commonpath((root, destination)) != root:
+        raise ValueError("The download destination escaped the configured download directory.")
+    if create:
+        os.makedirs(os.path.dirname(destination), exist_ok=True)
+    return destination
 
 
 def destination_path(item):
-    return _dest_path(item.get("profile_name", "profile"), item.get("rel_path", ""), item.get("name", "item"))
+    return _dest_path(item)
 
 
 def _download_one(item, settings, log):
-    dest = _dest_path(item["profile_name"], item["rel_path"], item["name"])
+    dest = _dest_path(item, create=True)
     part = dest + ".part"
+    if os.path.isfile(dest) and load_settings().get("skip_existing_downloads", True):
+        existing_size = os.path.getsize(dest)
+        update_item(
+            item["id"], status="done", bytes_done=existing_size,
+            bytes_total=existing_size, speed_bps=0.0, eta_seconds=0,
+            error=None, result="existing",
+        )
+        log(f"kept existing download: {dest}")
+        return
     headers = {"User-Agent": settings.get("user_agent", "Mozilla/5.0 (offline-directory-browser)")}
     existing = 0
     if os.path.exists(part):
@@ -341,8 +513,12 @@ def stop_background_worker():
 
 def destination_preview(profile_name, rel_path, name):
     """Return the path a queued download would use, without creating folders."""
-    base = os.path.join(downloads_dir(profile_name), *(_safe_relative_path(rel_path)))
-    return os.path.join(base, _safe_component(name))
+    return _dest_path({
+        "profile_name": profile_name,
+        "rel_path": rel_path,
+        "name": name,
+        "destination_rel_path": destination_relative_path(profile_name, rel_path, name),
+    })
 
 
 def recover_interrupted_downloads():

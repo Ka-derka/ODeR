@@ -13,7 +13,7 @@ STATE_FORMAT = "oder-state"
 SCHEMA_VERSIONS = {
     "settings": 1,
     "profiles": 1,
-    "download-queue": 1,
+    "download-queue": 2,
     "favorites": 1,
     "package-history": 1,
     "crawl-state": 1,
@@ -56,9 +56,36 @@ def _identity(value):
     return value
 
 
+def _legacy_download_component(value, fallback="item"):
+    value = "".join(c for c in str(value or "") if c not in '<>:"/\\|?*')
+    value = value.strip().rstrip(" .")
+    return value or fallback
+
+
+def _migrate_download_queue_v1(value):
+    """Pin existing queue items to the exact pre-0.21 destination layout."""
+    migrated = []
+    for raw in value if isinstance(value, list) else []:
+        if not isinstance(raw, dict):
+            migrated.append(raw)
+            continue
+        item = dict(raw)
+        if not item.get("destination_rel_path"):
+            parts = [_legacy_download_component(item.get("profile_name"), "profile")]
+            for component in str(item.get("rel_path") or "").replace("\\", "/").split("/"):
+                safe = _legacy_download_component(component, "")
+                if safe and safe not in {".", ".."}:
+                    parts.append(safe)
+            parts.append(_legacy_download_component(item.get("name"), "item"))
+            item["destination_rel_path"] = "/".join(parts)
+        migrated.append(item)
+    return migrated
+
+
 MIGRATIONS = {
     (kind, 0): _identity for kind in SCHEMA_VERSIONS
 }
+MIGRATIONS[("download-queue", 1)] = _migrate_download_queue_v1
 
 
 def _migrate(kind, version, value):

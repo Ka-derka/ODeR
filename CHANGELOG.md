@@ -4,6 +4,19 @@ Notable changes to ODeR are recorded here.
 
 ## Unreleased
 
+## 0.21.0 — 2026-08-20
+
+- Added durable structured download destinations that recreate each directory's decoded folder hierarchy beneath its own site folder.
+- Added download-queue schema 2 so destinations remain stable across restarts, directory renames, and future path-normalization changes while 0.20 queue items keep their previous locations.
+- Hardened destination creation against traversal components, control characters, Windows-reserved names, overly long components, and distinct files that normalize to the same local path.
+- Made the existing-file preference effective: completed files can now be kept without another network request, while disabling it continues to allow replacement.
+- Moved recursive folder expansion and queue creation off the UI thread and replaced per-file queue and group-control rewrites with single batch transactions, substantially improving large folder downloads.
+- Batched selected-file downloads and showed structured relative paths directly in the Downloads page.
+- Added a diagnostics exporter to Logs with ODeR/runtime information, state schema metadata, anonymous cache counts, SQLite integrity results, pending checkpoint detection, and download status totals.
+- Kept directory names, directory URLs, filenames, cached listings, and downloaded contents out of the default diagnostics report; recent logs are optional and carry an explicit privacy warning.
+- Expanded the 100,000-entry benchmark to cover recursive download-folder expansion and full-update checkpoint creation/recovery.
+- Added regression coverage for decoded hierarchy creation, legacy queue migration, reserved names, path collisions, traversal safety, one-write large batches, existing-file behavior, and diagnostics privacy/integrity.
+
 ## 0.20.0 — 2026-08-20
 
 - Added versioned schema envelopes and explicit migrations for settings, profiles, the download queue, favorites, package history, and crawl state.

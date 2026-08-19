@@ -11,6 +11,7 @@ try:
     from PySide6.QtWidgets import QApplication
     from gui.browser_widget import BrowserWidget
     from gui.queue_widget import QueueWidget
+    from gui.logs_page import LogsPage
     from gui.main_window import ActivityPage, HomePage
     from gui.profile_dialog import ProfileDialog
     PYSIDE_AVAILABLE = True
@@ -180,6 +181,27 @@ class BrowserLayoutTests(unittest.TestCase):
             self.assertIs(widget.tree.itemWidget(row, 3), bar)
             self.assertEqual(bar.value(), 65)
             widget.close()
+
+    def test_downloads_show_structured_relative_destination(self):
+        item = {
+            "id": "download-structured", "profile_name": "Example",
+            "name": "episode.mkv", "destination_rel_path": "Example/Season 1/English/episode.mkv",
+            "status": "pending", "bytes_done": 0, "bytes_total": None,
+        }
+        with patch("gui.queue_widget.downloader.load_queue", return_value=[item]):
+            widget = QueueWidget()
+            widget.refresh()
+            self.assertEqual(
+                widget.tree.topLevelItem(0).text(0), "Season 1/English/episode.mkv"
+            )
+            widget.close()
+
+    def test_logs_page_exposes_diagnostics_export(self):
+        widget = LogsPage()
+        from PySide6.QtWidgets import QPushButton
+        labels = {button.text() for button in widget.findChildren(QPushButton)}
+        self.assertIn("Export diagnostics…", labels)
+        widget.close()
 
     def test_home_cards_do_not_read_databases_on_ui_refresh(self):
         profile = {

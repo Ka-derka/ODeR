@@ -32,6 +32,13 @@ def fmt_duration(seconds):
     return f"{seconds // 3600}h {(seconds % 3600) // 60:02d}m"
 
 
+def structured_name(item):
+    relative = str(item.get("destination_rel_path") or "").replace("\\", "/")
+    if "/" in relative:
+        relative = relative.split("/", 1)[1]
+    return relative or item.get("name", "")
+
+
 class QueueWidget(QWidget):
     """Download queue with expandable batch groups and aggregate progress."""
 
@@ -180,7 +187,8 @@ class QueueWidget(QWidget):
         status = item.get("status", "")
         if item.get("error"):
             status += f": {item['error']}"
-        row.setText(0, item.get("name", ""))
+        row.setText(0, structured_name(item))
+        row.setToolTip(0, str(item.get("destination_rel_path") or item.get("name", "")))
         row.setText(1, item.get("profile_name", ""))
         row.setText(2, status)
         value, text = self._progress(item)
@@ -195,7 +203,8 @@ class QueueWidget(QWidget):
         status = item.get("status", "")
         if item.get("error"):
             status += f": {item['error']}"
-        row = QTreeWidgetItem([item.get("name", ""), item.get("profile_name", ""), status, "", ""])
+        row = QTreeWidgetItem([structured_name(item), item.get("profile_name", ""), status, "", ""])
+        row.setToolTip(0, str(item.get("destination_rel_path") or item.get("name", "")))
         row.setData(0, Qt.UserRole, ("item", item["id"]))
         (parent.addChild if parent else self.tree.addTopLevelItem)(row)
         self._item_rows[item["id"]] = row
@@ -208,15 +217,11 @@ class QueueWidget(QWidget):
         row.setText(4, f"{fmt_bytes(speed)}/s" + (f" · {fmt_duration(item.get('eta_seconds'))}" if speed else ""))
 
     def _retry_failed(self):
-        for item in downloader.load_queue():
-            if item.get("status") == "error":
-                downloader.retry_item(item["id"])
+        downloader.retry_failed()
         self.refresh()
 
     def _clear_completed(self):
-        for item in downloader.load_queue():
-            if item.get("status") == "done":
-                downloader.remove_item(item["id"])
+        downloader.clear_completed()
         self.refresh()
 
     @staticmethod
