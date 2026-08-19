@@ -4,6 +4,9 @@ $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Push-Location $projectRoot
 
 try {
+    Write-Host "Verifying release metadata..."
+    python tools\verify_release.py
+
     Write-Host "Installing/building Python dependencies..."
     python -m pip install -r requirements.txt
     python -m pip install pyinstaller

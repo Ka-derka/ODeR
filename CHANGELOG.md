@@ -4,6 +4,20 @@ Notable changes to ODeR are recorded here.
 
 ## Unreleased
 
+## 0.19.0 — 2026-08-19
+
+- Made update version parsing tolerant of abbreviated GitHub tags such as `0.18` and `v0.18`, normalizing them to `0.18.0`.
+- Replaced single-release update discovery with a scan of recent releases that ignores drafts, malformed tags, wrong channels, and incomplete assets before selecting the newest compatible update.
+- Added flexible recognition of versioned installer/portable asset names while retaining trusted-host and mandatory SHA-256 validation.
+- Added update size limits, free-space checks, executable/portable-ZIP structure validation, safe reuse of an already verified download, and cleanup of rejected partial files.
+- Added persistent failed-check status, daily backoff after automatic failures, and **View releases** recovery actions for both update-check and download errors.
+- Added atomic JSON writes, last-known-good backups, automatic recovery, and preservation of damaged settings, profiles, queue, favorites, package-history, and crawl-state files.
+- Serialized profile, favorite, and download-queue mutations so concurrent background work cannot overwrite another completed change.
+- Made downloads left in progress by an unexpected exit resume from their partial files on the next launch.
+- Added safe cache recovery that preserves an invalid SQLite database before recreating an empty index, while refusing to overwrite cache schemas created by newer ODeR versions.
+- Merged missing custom-theme palette fields from current defaults so older partial palettes remain usable after upgrades.
+- Added release-build metadata verification and regression coverage for skipped-version updates, malformed releases, download payload validation, state recovery, concurrent profile writes, cache compatibility, and interrupted downloads.
+
 ## 0.18.0 — 2026-08-19
 
 - Added automatic discovery and loading of full `.oder` indexes hosted by a directory or CDN, allowing complete indexes to replace folder-by-folder crawling.

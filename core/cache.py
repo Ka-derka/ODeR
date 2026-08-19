@@ -26,6 +26,33 @@ _SCHEMA_GUARD = threading.Lock()
 SCHEMA_VERSION = 1
 
 
+class CacheVersionError(RuntimeError):
+    """The cache was created by a newer, incompatible ODeR version."""
+
+
+def _quarantine_database(profile_id: str) -> str | None:
+    path = profile_cache_db_path(profile_id)
+    if not os.path.exists(path):
+        return None
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    destination = f"{path}.corrupt-{stamp}"
+    counter = 1
+    while os.path.exists(destination):
+        destination = f"{path}.corrupt-{stamp}-{counter}"
+        counter += 1
+    os.replace(path, destination)
+    for suffix in ("-wal", "-shm"):
+        sidecar = path + suffix
+        if os.path.exists(sidecar):
+            try:
+                os.replace(sidecar, destination + suffix)
+            except OSError:
+                pass
+    with _SCHEMA_GUARD:
+        _SCHEMA_READY.discard(profile_id)
+    return destination
+
+
 def _lock(profile_id: str) -> threading.RLock:
     with _LOCKS_GUARD:
         return _LOCKS.setdefault(profile_id, threading.RLock())
@@ -33,16 +60,28 @@ def _lock(profile_id: str) -> threading.RLock:
 
 def _connect(profile_id: str) -> sqlite3.Connection:
     conn = sqlite3.connect(profile_cache_db_path(profile_id), timeout=30)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout=30000")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA temp_store=MEMORY")
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA temp_store=MEMORY")
+    except Exception:
+        conn.close()
+        raise
     with _SCHEMA_GUARD:
         if profile_id not in _SCHEMA_READY:
             # WAL is persistent, so negotiating it once per database/process is
             # enough. Doing this for every short-lived reader can momentarily
             # require a write lock and stall browsing during a crawl.
             conn.execute("PRAGMA journal_mode=WAL")
+            version_row = conn.execute("PRAGMA user_version").fetchone()
+            existing_version = int(version_row[0] if version_row else 0)
+            if existing_version > SCHEMA_VERSION:
+                conn.close()
+                raise CacheVersionError(
+                    f"This cached index uses schema {existing_version}, but this ODeR version supports "
+                    f"up to schema {SCHEMA_VERSION}. Update ODeR before opening it."
+                )
             conn.execute(
                 """CREATE TABLE IF NOT EXISTS meta (
                     key TEXT PRIMARY KEY,
@@ -199,7 +238,23 @@ def _parent_url(url: str, base_url: str) -> str | None:
 def initialize(profile_id: str, base_url: str) -> None:
     base_url = _norm_base(base_url)
     with _lock(profile_id):
-        conn = _connect(profile_id)
+        try:
+            conn = _connect(profile_id)
+        except sqlite3.DatabaseError:
+            # Directory caches are derived data. Preserve a damaged database
+            # for diagnosis, then recreate an empty cache so startup and a
+            # future crawl remain possible.
+            quarantined = _quarantine_database(profile_id)
+            try:
+                from core import applog
+                applog.log(
+                    f"Damaged cache for profile {profile_id} was preserved as "
+                    f"{os.path.basename(quarantined) if quarantined else 'a recovery copy'}; "
+                    "an empty cache was created."
+                )
+            except Exception:
+                pass
+            conn = _connect(profile_id)
         try:
             row = conn.execute("SELECT value FROM meta WHERE key='base_url'").fetchone()
             old_base = row[0] if row else None

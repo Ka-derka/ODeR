@@ -31,5 +31,8 @@ jobs:
       - name: Compile Python sources
         run: python -m compileall -q core gui main.py
 
+      - name: Verify release metadata
+        run: python tools/verify_release.py
+
       - name: Run tests
         run: python -m unittest discover -s tests -v

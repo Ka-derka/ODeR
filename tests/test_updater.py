@@ -51,11 +51,11 @@ class FakeSession:
         return None
 
 
-def release(version="0.16.0", asset_name=updater.INSTALLER_ASSET_NAME, digest=None):
+def release(version="0.16.0", asset_name=updater.INSTALLER_ASSET_NAME, digest=None, tag=None):
     payload = b"ODeR update"
     checksum = digest or hashlib.sha256(payload).hexdigest()
     return {
-        "tag_name": f"v{version}",
+        "tag_name": tag or f"v{version}",
         "name": f"ODeR {version}",
         "body": "Release notes",
         "published_at": "2026-08-20T12:00:00Z",
@@ -74,6 +74,8 @@ def release(version="0.16.0", asset_name=updater.INSTALLER_ASSET_NAME, digest=No
 class UpdaterTests(unittest.TestCase):
     def test_version_comparison(self):
         self.assertTrue(updater.is_newer_version("0.18.0", "0.17.0"))
+        self.assertTrue(updater.is_newer_version("0.18", "0.17.0"))
+        self.assertEqual(updater.normalize_version("v0.18"), "0.18.0")
         self.assertTrue(updater.is_newer_version("0.17.0", "0.16.2"))
         self.assertTrue(updater.is_newer_version("0.16.2", "0.16.1"))
         self.assertTrue(updater.is_newer_version("0.16.1", "0.16.0"))
@@ -87,7 +89,7 @@ class UpdaterTests(unittest.TestCase):
 
     def test_update_check_uses_installer_and_github_digest(self):
         metadata = release()
-        session = FakeSession({updater.STABLE_RELEASE_URL: [FakeResponse(json_data=metadata)]})
+        session = FakeSession({updater.RELEASES_URL: [FakeResponse(json_data=[metadata])]})
         info = updater.check_for_update("0.15.2", session=session)
         self.assertEqual(info.version, "0.16.0")
         self.assertEqual(info.asset.name, updater.INSTALLER_ASSET_NAME)
@@ -95,15 +97,33 @@ class UpdaterTests(unittest.TestCase):
 
     def test_github_normalized_installer_name_is_accepted(self):
         metadata = release(asset_name="ODeR.Installer.exe")
-        session = FakeSession({updater.STABLE_RELEASE_URL: [FakeResponse(json_data=metadata)]})
+        session = FakeSession({updater.RELEASES_URL: [FakeResponse(json_data=[metadata])]})
         info = updater.check_for_update("0.15.2", session=session)
         self.assertEqual(info.asset.name, "ODeR.Installer.exe")
 
     def test_current_version_needs_no_asset_download(self):
         metadata = release(version="0.15.2")
         metadata["assets"] = []
-        session = FakeSession({updater.STABLE_RELEASE_URL: [FakeResponse(json_data=metadata)]})
+        session = FakeSession({updater.RELEASES_URL: [FakeResponse(json_data=[metadata])]})
         self.assertIsNone(updater.check_for_update("0.15.2", session=session))
+
+    def test_abbreviated_release_tag_updates_skipped_versions(self):
+        metadata = release(version="0.18.0", tag="0.18")
+        session = FakeSession({updater.RELEASES_URL: [FakeResponse(json_data=[metadata])]})
+        info = updater.check_for_update("0.16.2", session=session)
+        self.assertEqual(info.version, "0.18.0")
+
+    def test_malformed_and_incomplete_releases_do_not_block_valid_update(self):
+        malformed = release(version="9.0.0", tag="latest")
+        incomplete = release(version="0.20.0")
+        incomplete["assets"] = []
+        valid = release(version="0.19.0", asset_name="ODeR Installer 0.19.exe")
+        session = FakeSession({
+            updater.RELEASES_URL: [FakeResponse(json_data=[malformed, incomplete, valid])]
+        })
+        info = updater.check_for_update("0.16.2", session=session)
+        self.assertEqual(info.version, "0.19.0")
+        self.assertEqual(info.asset.name, "ODeR Installer 0.19.exe")
 
     def test_preview_channel_selects_portable_asset(self):
         draft = release(version="9.0.0")
@@ -126,14 +146,14 @@ class UpdaterTests(unittest.TestCase):
             "size": 100,
         })
         session = FakeSession({
-            updater.STABLE_RELEASE_URL: [FakeResponse(json_data=metadata)],
+            updater.RELEASES_URL: [FakeResponse(json_data=[metadata])],
             checksum_url: [FakeResponse(content=f"{checksum}  {updater.INSTALLER_ASSET_NAME}\n".encode())],
         })
         info = updater.check_for_update("0.15.2", session=session)
         self.assertEqual(info.asset.sha256, checksum)
 
     def test_verified_download_is_moved_into_place(self):
-        payload = b"verified update bytes"
+        payload = b"MZverified update bytes"
         asset_url = "https://github.com/Ka-derka/ODeR/releases/download/v0.16.0/ODeR%20Installer.exe"
         info = updater.UpdateInfo(
             version="0.16.0", title="ODeR", notes="", published_at="", page_url="",
@@ -154,7 +174,7 @@ class UpdaterTests(unittest.TestCase):
             self.assertEqual(progress[-1], (len(payload), len(payload)))
 
     def test_bad_download_is_deleted(self):
-        payload = b"tampered"
+        payload = b"MZtampered"
         asset_url = "https://github.com/Ka-derka/ODeR/releases/download/v0.16.0/ODeR%20Installer.exe"
         info = updater.UpdateInfo(
             version="0.16.0", title="ODeR", notes="", published_at="", page_url="",
@@ -169,6 +189,40 @@ class UpdaterTests(unittest.TestCase):
             version_dir = os.path.join(temporary_dir, "0.16.0")
             self.assertFalse(os.path.exists(os.path.join(version_dir, updater.INSTALLER_ASSET_NAME)))
             self.assertFalse(os.path.exists(os.path.join(version_dir, updater.INSTALLER_ASSET_NAME + ".part")))
+
+    def test_verified_non_executable_payload_is_rejected(self):
+        payload = b"not a Windows executable"
+        asset_url = "https://github.com/Ka-derka/ODeR/releases/download/v0.19.0/ODeR%20Installer.exe"
+        info = updater.UpdateInfo(
+            version="0.19.0", title="ODeR", notes="", published_at="", page_url="",
+            channel="stable", asset=updater.ReleaseAsset(
+                updater.INSTALLER_ASSET_NAME, asset_url, len(payload), hashlib.sha256(payload).hexdigest()
+            ),
+        )
+        session = FakeSession({asset_url: [FakeResponse(content=payload, url=asset_url)]})
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            with self.assertRaisesRegex(updater.UpdateError, "not a Windows executable"):
+                updater.download_update(info, destination_root=temporary_dir, session=session)
+
+    def test_existing_verified_download_is_reused(self):
+        payload = b"MZalready downloaded"
+        asset_url = "https://github.com/Ka-derka/ODeR/releases/download/v0.19.0/ODeR%20Installer.exe"
+        info = updater.UpdateInfo(
+            version="0.19.0", title="ODeR", notes="", published_at="", page_url="",
+            channel="stable", asset=updater.ReleaseAsset(
+                updater.INSTALLER_ASSET_NAME, asset_url, len(payload), hashlib.sha256(payload).hexdigest()
+            ),
+        )
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            version_dir = os.path.join(temporary_dir, info.version)
+            os.makedirs(version_dir)
+            destination = os.path.join(version_dir, updater.INSTALLER_ASSET_NAME)
+            with open(destination, "wb") as handle:
+                handle.write(payload)
+            result = updater.download_update(
+                info, destination_root=temporary_dir, session=FakeSession({})
+            )
+            self.assertEqual(result, destination)
 
     def test_daily_check_interval(self):
         now = datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)

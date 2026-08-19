@@ -1,9 +1,8 @@
 """Small restart-visible state record for resumable crawls."""
-import json
-import os
 from datetime import datetime, timezone
 
 from core.paths import profile_crawl_state_path
+from core.persistence import load_json, save_json
 
 
 def _now():
@@ -11,12 +10,7 @@ def _now():
 
 
 def load(profile_id):
-    try:
-        with open(profile_crawl_state_path(profile_id), "r", encoding="utf-8") as handle:
-            value = json.load(handle)
-        return value if isinstance(value, dict) else None
-    except (OSError, ValueError):
-        return None
+    return load_json(profile_crawl_state_path(profile_id), None, dict)
 
 
 def save(profile_id, **fields):
@@ -25,10 +19,7 @@ def save(profile_id, **fields):
     value["profile_id"] = profile_id
     value["updated_at"] = _now()
     path = profile_crawl_state_path(profile_id)
-    temp = path + ".tmp"
-    with open(temp, "w", encoding="utf-8") as handle:
-        json.dump(value, handle, indent=2)
-    os.replace(temp, path)
+    save_json(path, value)
     return value
 
 

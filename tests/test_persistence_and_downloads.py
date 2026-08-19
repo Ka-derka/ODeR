@@ -54,6 +54,15 @@ class PersistenceAndDownloadTests(unittest.TestCase):
         downloader.pause_group(group["id"])
         self.assertEqual({item["status"] for item in downloader.items_in_group(group["id"])}, {"done", "paused"})
 
+    def test_interrupted_downloads_are_resumable_after_restart(self):
+        item = downloader.enqueue("p", "Site", "https://x/file", "file", "")
+        downloader.update_item(item["id"], status="downloading", bytes_done=1024, speed_bps=50)
+        self.assertEqual(downloader.recover_interrupted_downloads(), 1)
+        recovered = downloader.load_queue()[0]
+        self.assertEqual(recovered["status"], "pending")
+        self.assertEqual(recovered["bytes_done"], 1024)
+        self.assertEqual(recovered["speed_bps"], 0.0)
+
     def test_folder_and_saved_search_favorites(self):
         first = library.add_folder("p", "https://x/folder/", "Folder")
         duplicate = library.add_folder("p", "https://x/folder/", "Folder")

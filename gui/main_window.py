@@ -684,6 +684,7 @@ class SettingsPage(QWidget):
         update_hint.setObjectName('mutedLabel'); update_hint.setWordWrap(True); uf.addRow('',update_hint)
         self.update_status=QLabel(); self.update_status.setObjectName('mutedLabel'); self.update_status.setWordWrap(True); uf.addRow('Status',self.update_status)
         update_actions=QHBoxLayout(); check_now=QPushButton('Check now'); check_now.clicked.connect(self._check_now); update_actions.addWidget(check_now)
+        view_releases=QPushButton('View releases'); view_releases.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(updater.RELEASES_PAGE_URL))); update_actions.addWidget(view_releases)
         self.clear_skipped=QPushButton('Clear skipped version'); self.clear_skipped.clicked.connect(self._clear_skipped_update); self.clear_skipped.setEnabled(bool(self._settings.get('skipped_update_version'))); update_actions.addWidget(self.clear_skipped); update_actions.addStretch(1); uf.addRow('',update_actions)
         self.set_update_status(); form.addWidget(updates)
 
@@ -737,14 +738,18 @@ class SettingsPage(QWidget):
             self.update_status.setText(message)
             return
         current = load_settings()
-        last = current.get('last_update_check_at')
+        last = current.get('last_update_attempt_at') or current.get('last_update_check_at')
         if last:
             last_text = str(last).replace('T', ' ').replace('+00:00', ' UTC')
         else:
             last_text = 'Never'
         skipped = current.get('skipped_update_version')
         suffix = f" · Skipping {skipped}" if skipped else ''
-        self.update_status.setText(f"Last checked: {last_text}{suffix}")
+        error = current.get('last_update_error')
+        if error:
+            self.update_status.setText(f"Last attempt: {last_text} · Failed: {error}{suffix}")
+        else:
+            self.update_status.setText(f"Last checked: {last_text}{suffix}")
 
     def reset(self):
         self.download_dir.setText(downloads_root()); self.dl_concurrency.setValue(2); self.dl_delay.setValue(0.5); self.overwrite_downloads.setChecked(True)
@@ -1466,7 +1471,7 @@ class MainWindow(QMainWindow):
         settings = load_settings()
         if (getattr(sys, "frozen", False)
                 and settings.get("automatic_update_checks", True)
-                and updater.should_check(settings.get("last_update_check_at"))):
+                and updater.should_check(settings.get("last_update_attempt_at") or settings.get("last_update_check_at"))):
             QTimer.singleShot(500, self._maybe_check_updates)
 
     def _maybe_check_updates(self):
@@ -1475,7 +1480,7 @@ class MainWindow(QMainWindow):
             return
         if not settings.get("automatic_update_checks", True):
             return
-        if updater.should_check(settings.get("last_update_check_at")):
+        if updater.should_check(settings.get("last_update_attempt_at") or settings.get("last_update_check_at")):
             self._check_for_updates(manual=False, channel=settings.get("update_channel", "stable"))
 
     def _check_for_updates(self, manual=False, channel=None):
@@ -1489,6 +1494,7 @@ class MainWindow(QMainWindow):
             self.settings.set_update_status("Checking GitHub for updates…")
         if manual:
             self.statusBar().showMessage("Checking GitHub for updates…")
+        save_settings({"last_update_attempt_at": updater.checked_timestamp(), "last_update_error": None})
         task = UpdateCheckTask(APP_VERSION, channel, mode == "portable", self)
         self._update_check_task = task
         task.update_found.connect(lambda info, m=manual: self._update_found(info, m))
@@ -1498,7 +1504,9 @@ class MainWindow(QMainWindow):
         task.start()
 
     def _mark_update_checked(self):
-        save_settings({"last_update_check_at": updater.checked_timestamp()})
+        timestamp = updater.checked_timestamp()
+        save_settings({"last_update_attempt_at": timestamp, "last_update_check_at": timestamp,
+                       "last_update_error": None})
 
     def _update_found(self, info, manual):
         self._mark_update_checked()
@@ -1536,10 +1544,20 @@ class MainWindow(QMainWindow):
 
     def _update_check_failed(self, message, manual):
         applog.log(f"Update check failed: {message}")
+        save_settings({"last_update_error": message})
         if self.settings is not None:
             self.settings.set_update_status(f"Update check failed: {message}")
         if manual:
-            QMessageBox.warning(self, "Update check failed", message)
+            box = QMessageBox(self)
+            box.setWindowTitle("Update check failed")
+            box.setIcon(QMessageBox.Warning)
+            box.setText(message)
+            box.setInformativeText("You can retry later or open GitHub Releases to update manually.")
+            open_releases = box.addButton("View releases", QMessageBox.ActionRole)
+            box.addButton(QMessageBox.Ok)
+            box.exec()
+            if box.clickedButton() is open_releases:
+                QDesktopServices.openUrl(QUrl(updater.RELEASES_PAGE_URL))
 
     def _update_check_finished(self, task):
         if self._update_check_task is task:
@@ -1645,7 +1663,16 @@ class MainWindow(QMainWindow):
     def _update_download_failed(self, message):
         self._hide_update_progress()
         applog.log(f"Update download failed: {message}")
-        QMessageBox.critical(self, "Update download failed", message)
+        box = QMessageBox(self)
+        box.setWindowTitle("Update download failed")
+        box.setIcon(QMessageBox.Critical)
+        box.setText(message)
+        box.setInformativeText("No existing ODeR files were changed. You can download the release manually from GitHub.")
+        open_releases = box.addButton("View releases", QMessageBox.ActionRole)
+        box.addButton(QMessageBox.Ok)
+        box.exec()
+        if box.clickedButton() is open_releases:
+            QDesktopServices.openUrl(QUrl(updater.RELEASES_PAGE_URL))
         self.statusBar().showMessage("Update download failed")
 
     def _update_download_canceled(self):

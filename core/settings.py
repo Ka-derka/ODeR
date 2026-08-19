@@ -1,6 +1,7 @@
 """Global application settings."""
-import json, os
+import os
 from core.paths import data_dir
+from core.persistence import load_json, save_json
 from core.version import APP_VERSION
 
 
@@ -35,20 +36,21 @@ DEFAULTS = {
     "browser_page_size": 500,
     "automatic_update_checks": True,
     "update_channel": "stable",
+    "last_update_attempt_at": None,
     "last_update_check_at": None,
+    "last_update_error": None,
     "skipped_update_version": None,
 }
 
 
 def load_settings():
-    try:
-        with open(settings_path(), "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        data = {}
+    data = load_json(settings_path(), {}, dict)
     out = dict(DEFAULTS)
-    if isinstance(data, dict):
-        out.update(data)
+    out.update(data)
+    custom = dict(DEFAULTS["custom_theme"])
+    if isinstance(data.get("custom_theme"), dict):
+        custom.update(data["custom_theme"])
+    out["custom_theme"] = custom
     return out
 
 
@@ -56,9 +58,5 @@ def save_settings(data):
     settings = load_settings()
     settings.update(data or {})
     p = settings_path()
-    os.makedirs(os.path.dirname(p), exist_ok=True)
-    tmp = p + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(settings, f, indent=2)
-    os.replace(tmp, p)
+    save_json(p, settings)
     return settings

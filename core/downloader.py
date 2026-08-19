@@ -10,7 +10,6 @@ else (pause, retry, remove) just edits queue.json; lanes notice on their
 next poll.
 """
 import os
-import json
 import time
 import threading
 import uuid
@@ -20,9 +19,10 @@ from datetime import datetime, timezone
 from core.paths import queue_path, downloads_dir
 from core.settings import load_settings, downloads_root
 from core.profiles import get_profile
+from core.persistence import load_json, save_json
 from core import applog
 
-_file_lock = threading.Lock()
+_file_lock = threading.RLock()
 _stop_all = threading.Event()
 _paused_all = threading.Event()  # when set, no NEW downloads start (in-flight ones finish)
 _lane_threads = {}  # profile_id -> Thread
@@ -42,21 +42,13 @@ def is_paused():
 
 
 def load_queue():
-    p = queue_path()
-    if not os.path.exists(p):
-        return []
     with _file_lock:
-        with open(p, "r", encoding="utf-8") as f:
-            return json.load(f)
+        return load_json(queue_path(), [], list)
 
 
-def save_queue(items):
+def save_queue(items, *, backup=True):
     with _file_lock:
-        p = queue_path()
-        tmp = p + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(items, f, indent=2)
-        os.replace(tmp, p)
+        save_json(queue_path(), items, backup=backup)
 
 
 def new_group(name):
@@ -64,59 +56,64 @@ def new_group(name):
 
 
 def enqueue(profile_id, profile_name, url, name, rel_path, group_id=None, group_name=None):
-    items = load_queue()
-    for existing in items:
-        if existing.get("profile_id") == profile_id and existing.get("url") == url and existing.get("status") in {"pending", "downloading", "paused"}:
-            return existing
-    item = {
-        "id": uuid.uuid4().hex[:12],
-        "profile_id": profile_id,
-        "profile_name": profile_name,
-        "url": url,
-        "name": name,
-        "rel_path": rel_path,
-        "status": "pending",
-        "bytes_done": 0,
-        "bytes_total": None,
-        "error": None,
-        "group_id": group_id,
-        "group_name": group_name,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "speed_bps": 0.0,
-        "eta_seconds": None,
-    }
-    items.append(item)
-    save_queue(items)
+    with _file_lock:
+        items = load_queue()
+        for existing in items:
+            if existing.get("profile_id") == profile_id and existing.get("url") == url and existing.get("status") in {"pending", "downloading", "paused"}:
+                return existing
+        item = {
+            "id": uuid.uuid4().hex[:12],
+            "profile_id": profile_id,
+            "profile_name": profile_name,
+            "url": url,
+            "name": name,
+            "rel_path": rel_path,
+            "status": "pending",
+            "bytes_done": 0,
+            "bytes_total": None,
+            "error": None,
+            "group_id": group_id,
+            "group_name": group_name,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "speed_bps": 0.0,
+            "eta_seconds": None,
+        }
+        items.append(item)
+        save_queue(items)
     applog.log(f"queued: {name} ({profile_name})")
     return item
 
 
 def update_item(item_id, **fields):
-    items = load_queue()
-    for it in items:
-        if it["id"] == item_id:
-            it.update(fields)
-            break
-    save_queue(items)
+    with _file_lock:
+        items = load_queue()
+        for it in items:
+            if it["id"] == item_id:
+                it.update(fields)
+                break
+        progress_only = set(fields).issubset({"bytes_done", "bytes_total", "speed_bps", "eta_seconds"})
+        save_queue(items, backup=not progress_only)
 
 
 def remove_item(item_id):
-    items = load_queue()
-    removed = next((it for it in items if it["id"] == item_id), None)
-    items = [it for it in items if it["id"] != item_id]
-    save_queue(items)
+    with _file_lock:
+        items = load_queue()
+        removed = next((it for it in items if it["id"] == item_id), None)
+        items = [it for it in items if it["id"] != item_id]
+        save_queue(items)
     if removed:
         applog.log(f"removed from queue: {removed['name']} ({removed['profile_name']})")
 
 
 def retry_item(item_id):
-    items = load_queue()
-    for it in items:
-        if it["id"] == item_id:
-            it["status"] = "pending"
-            it["error"] = None
-            applog.log(f"retrying: {it['name']} ({it['profile_name']})")
-    save_queue(items)
+    with _file_lock:
+        items = load_queue()
+        for it in items:
+            if it["id"] == item_id:
+                it["status"] = "pending"
+                it["error"] = None
+                applog.log(f"retrying: {it['name']} ({it['profile_name']})")
+        save_queue(items)
 
 
 def pause_item(item_id):
@@ -330,6 +327,9 @@ def start_background_worker(log=print):
     global _dispatcher_thread
     _stop_all.clear()
     if _dispatcher_thread is None or not _dispatcher_thread.is_alive():
+        recovered = recover_interrupted_downloads()
+        if recovered:
+            log(f"resuming {recovered} download{'s' if recovered != 1 else ''} interrupted by the previous exit")
         _dispatcher_thread = threading.Thread(target=_dispatcher, args=(log,), daemon=True)
         _dispatcher_thread.start()
     return _dispatcher_thread
@@ -343,3 +343,18 @@ def destination_preview(profile_name, rel_path, name):
     """Return the path a queued download would use, without creating folders."""
     base = os.path.join(downloads_dir(profile_name), *(_safe_relative_path(rel_path)))
     return os.path.join(base, _safe_component(name))
+
+
+def recover_interrupted_downloads():
+    """Make downloads interrupted by a process exit resumable on next launch."""
+    with _file_lock:
+        items = load_queue()
+        recovered = 0
+        for item in items:
+            if item.get("status") == "downloading":
+                item.update(status="pending", speed_bps=0.0, eta_seconds=None,
+                            error="Resuming after ODeR was closed")
+                recovered += 1
+        if recovered:
+            save_queue(items)
+        return recovered

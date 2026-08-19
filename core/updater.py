@@ -5,11 +5,14 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import os
 import re
+import shutil
+import zipfile
 from urllib.parse import urlparse
 
 import requests
 
 from core.paths import updates_dir
+from core.version import APP_VERSION
 
 
 REPOSITORY = "Ka-derka/ODeR"
@@ -22,9 +25,13 @@ INSTALLER_ASSET_NAMES = (INSTALLER_ASSET_NAME, "ODeR.Installer.exe")
 PORTABLE_ASSET_NAMES = (PORTABLE_ASSET_NAME,)
 CHECKSUM_ASSET_NAME = "SHA256SUMS.txt"
 CHECK_INTERVAL = timedelta(hours=24)
+MAX_UPDATE_BYTES = 2 * 1024 * 1024 * 1024
+DISK_SPACE_MARGIN = 64 * 1024 * 1024
+RELEASES_PAGE_URL = f"https://github.com/{REPOSITORY}/releases"
 
 _VERSION_PATTERN = re.compile(
-    r"^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$"
+    r"^v?(\d+)\.(\d+)(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$",
+    re.IGNORECASE,
 )
 _SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
 _ALLOWED_DOWNLOAD_HOSTS = {
@@ -68,11 +75,12 @@ class UpdateInfo:
 
 
 def parse_version(value):
-    """Return a tuple suitable for comparing semantic release versions."""
+    """Return a comparable version tuple, accepting ``0.18`` as ``0.18.0``."""
     match = _VERSION_PATTERN.fullmatch(str(value or "").strip())
     if not match:
         raise UpdateError(f"Invalid release version: {value!r}")
     major, minor, patch, suffix = match.groups()
+    patch = patch or "0"
     if suffix is None:
         prerelease_key = ()
         stable = 1
@@ -84,6 +92,18 @@ def parse_version(value):
         stable = 0
     # A stable version sorts after every pre-release with the same numbers.
     return int(major), int(minor), int(patch), stable, prerelease_key
+
+
+def normalize_version(value):
+    """Return a display/storage form with an explicit patch component."""
+    match = _VERSION_PATTERN.fullmatch(str(value or "").strip())
+    if not match:
+        raise UpdateError(f"Invalid release version: {value!r}")
+    major, minor, patch, suffix = match.groups()
+    normalized = f"{int(major)}.{int(minor)}.{int(patch or 0)}"
+    if suffix:
+        normalized += f"-{suffix}"
+    return normalized
 
 
 def is_newer_version(candidate, current):
@@ -122,11 +142,24 @@ def _validate_download_url(url):
         raise UpdateError("The release contains an untrusted download URL.")
 
 
-def _request_json(session, url, current_version):
+def _request_json(session, url, current_version, **request_kwargs):
     response = None
     try:
-        response = session.get(url, headers=_headers(current_version), timeout=20)
-        response.raise_for_status()
+        response = session.get(url, headers=_headers(current_version), timeout=20, **request_kwargs)
+        try:
+            response.raise_for_status()
+        except Exception as exc:
+            status = getattr(response, "status_code", None)
+            headers = getattr(response, "headers", {}) or {}
+            if status == 403 and str(headers.get("X-RateLimit-Remaining", "")) == "0":
+                raise UpdateError(
+                    "GitHub's update-check limit was reached. Try again later or open the releases page."
+                ) from exc
+            if status:
+                raise UpdateError(
+                    f"GitHub returned HTTP {status} while checking for updates."
+                ) from exc
+            raise
         return response.json()
     except ValueError as exc:
         raise UpdateError(f"Could not read GitHub release information: {exc}") from exc
@@ -139,17 +172,28 @@ def _request_json(session, url, current_version):
             response.close()
 
 
-def _select_release(session, channel, current_version):
-    if channel == "preview":
-        releases = _request_json(session, RELEASES_URL, current_version)
-        if not isinstance(releases, list):
-            raise UpdateError("GitHub returned invalid release information.")
-        release = next((item for item in releases if isinstance(item, dict) and not item.get("draft")), None)
-    else:
-        release = _request_json(session, STABLE_RELEASE_URL, current_version)
-    if not isinstance(release, dict):
-        raise UpdateError("No published GitHub release was found.")
-    return release
+def _release_candidates(session, channel, current_version):
+    releases = _request_json(
+        session, RELEASES_URL, current_version, params={"per_page": 30}
+    )
+    if not isinstance(releases, list):
+        raise UpdateError("GitHub returned invalid release information.")
+    candidates = []
+    for release in releases:
+        if not isinstance(release, dict) or release.get("draft"):
+            continue
+        tag = str(release.get("tag_name") or "").strip()
+        try:
+            version = normalize_version(tag)
+            version_key = parse_version(tag)
+        except UpdateError:
+            # One mistyped tag must not strand users on every other valid release.
+            continue
+        if channel == "stable" and (release.get("prerelease") or version_key[3] == 0):
+            continue
+        candidates.append((version_key, version, release))
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates
 
 
 def _asset_by_name(release, name):
@@ -163,6 +207,25 @@ def _asset_by_names(release, names):
     for name in names:
         asset = _asset_by_name(release, name)
         if asset:
+            return asset
+    return None
+
+
+def _select_update_asset(release, portable):
+    names = PORTABLE_ASSET_NAMES if portable else INSTALLER_ASSET_NAMES
+    exact = _asset_by_names(release, names)
+    if exact:
+        return exact
+    for asset in release.get("assets") or []:
+        if not isinstance(asset, dict):
+            continue
+        name = str(asset.get("name") or "")
+        folded = re.sub(r"[^a-z0-9]", "", name.casefold())
+        if portable:
+            if name.casefold().endswith(".zip") and folded.startswith("oder") and "portable" in folded:
+                return asset
+        elif (name.casefold().endswith(".exe") and folded.startswith("oder")
+              and "uninstall" not in folded and ("installer" in folded or "setup" in folded)):
             return asset
     return None
 
@@ -192,14 +255,14 @@ def _download_text(session, asset, current_version):
 def _checksum_from_text(text, asset_names):
     if isinstance(asset_names, str):
         asset_names = (asset_names,)
-    accepted_names = set(asset_names)
+    accepted_names = {str(name).casefold() for name in asset_names}
     for raw_line in str(text or "").splitlines():
         parts = raw_line.strip().split(maxsplit=1)
         if len(parts) != 2:
             continue
         digest, name = parts
-        name = name.lstrip("*").strip()
-        if name in accepted_names and _SHA256_PATTERN.fullmatch(digest):
+        name = name.lstrip("*").strip().lstrip("./").replace("\\", "/")
+        if name.casefold() in accepted_names and _SHA256_PATTERN.fullmatch(digest):
             return digest.casefold()
     return None
 
@@ -230,44 +293,111 @@ def check_for_update(current_version, channel="stable", portable=False, session=
     owns_session = session is None
     session = session or requests.Session()
     try:
-        release = _select_release(session, channel, current_version)
-        tag = str(release.get("tag_name") or "").strip()
-        version = tag[1:] if tag.casefold().startswith("v") else tag
-        if not is_newer_version(version, current_version):
-            return None
-        asset_names = PORTABLE_ASSET_NAMES if portable else INSTALLER_ASSET_NAMES
+        current_key = parse_version(current_version)
         expected_asset_name = PORTABLE_ASSET_NAME if portable else INSTALLER_ASSET_NAME
-        asset = _asset_by_names(release, asset_names)
-        if not asset:
-            raise UpdateError(f"ODeR {version} does not include {expected_asset_name}.")
-        url = asset.get("browser_download_url")
-        _validate_download_url(url)
-        checksum = _resolve_checksum(session, release, asset, current_version)
-        return UpdateInfo(
-            version=version,
-            title=str(release.get("name") or f"ODeR {version}"),
-            notes=str(release.get("body") or "No release notes were provided."),
-            published_at=str(release.get("published_at") or ""),
-            page_url=str(release.get("html_url") or f"https://github.com/{REPOSITORY}/releases"),
-            channel=channel,
-            asset=ReleaseAsset(
-                name=str(asset.get("name")),
-                url=str(url),
-                size=max(0, int(asset.get("size") or 0)),
-                sha256=checksum,
-            ),
-        )
+        unusable = []
+        for version_key, version, release in _release_candidates(session, channel, current_version):
+            if version_key <= current_key:
+                continue
+            asset = _select_update_asset(release, portable)
+            if not asset:
+                unusable.append(f"ODeR {version} does not include {expected_asset_name}")
+                continue
+            try:
+                size = max(0, int(asset.get("size") or 0))
+            except (TypeError, ValueError):
+                unusable.append(f"ODeR {version} reports an invalid update size")
+                continue
+            if size > MAX_UPDATE_BYTES:
+                unusable.append(f"ODeR {version} exceeds the safe update size limit")
+                continue
+            try:
+                url = asset.get("browser_download_url")
+                _validate_download_url(url)
+                checksum = _resolve_checksum(session, release, asset, current_version)
+            except UpdateError as exc:
+                unusable.append(f"ODeR {version}: {exc}")
+                continue
+            page_url = str(release.get("html_url") or "")
+            parsed_page = urlparse(page_url)
+            if parsed_page.scheme != "https" or parsed_page.hostname != "github.com":
+                page_url = RELEASES_PAGE_URL
+            return UpdateInfo(
+                version=version,
+                title=str(release.get("name") or f"ODeR {version}"),
+                notes=str(release.get("body") or "No release notes were provided."),
+                published_at=str(release.get("published_at") or ""),
+                page_url=page_url,
+                channel=channel,
+                asset=ReleaseAsset(
+                    name=str(asset.get("name")),
+                    url=str(url),
+                    size=size,
+                    sha256=checksum,
+                ),
+            )
+        if unusable:
+            raise UpdateError(
+                "A newer release was found, but no safe compatible download was available. "
+                + unusable[0]
+                + ". Open the GitHub releases page to update manually."
+            )
+        return None
     finally:
         if owns_session:
             session.close()
 
 
-def download_update(info, destination_root=None, progress=None, canceled=None, session=None):
+def _sha256_path(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _validate_update_payload(path, asset_name):
+    lowered = asset_name.casefold()
+    if lowered.endswith(".exe"):
+        with open(path, "rb") as handle:
+            if handle.read(2) != b"MZ":
+                raise UpdateError("The verified installer is not a Windows executable.")
+        return
+    if lowered.endswith(".zip"):
+        try:
+            with zipfile.ZipFile(path, "r") as archive:
+                names = {os.path.basename(item.filename).casefold() for item in archive.infolist()}
+                if "oder-portable.exe" not in names or "portable.flag" not in names:
+                    raise UpdateError("The portable update does not contain the expected ODeR files.")
+        except zipfile.BadZipFile as exc:
+            raise UpdateError("The verified portable update is not a valid ZIP file.") from exc
+        return
+    raise UpdateError("The release asset has an unsupported file type.")
+
+
+def _existing_download_is_valid(path, info):
+    if not os.path.isfile(path):
+        return False
+    try:
+        if info.asset.size and os.path.getsize(path) != info.asset.size:
+            return False
+        if _sha256_path(path).casefold() != info.asset.sha256.casefold():
+            return False
+        _validate_update_payload(path, info.asset.name)
+        return True
+    except (OSError, UpdateError):
+        return False
+
+
+def download_update(info, destination_root=None, progress=None, canceled=None, session=None,
+                    client_version=None):
     """Download and verify an update, returning its final local path."""
     destination_root = destination_root or updates_dir()
     safe_name = os.path.basename(info.asset.name)
     if safe_name != info.asset.name or not safe_name:
         raise UpdateError("The release asset has an unsafe filename.")
+    if info.asset.size < 0 or info.asset.size > MAX_UPDATE_BYTES:
+        raise UpdateError("The update exceeds ODeR's safe download size limit.")
     version_dir = os.path.join(destination_root, info.version)
     os.makedirs(version_dir, exist_ok=True)
     destination = os.path.join(version_dir, safe_name)
@@ -279,9 +409,20 @@ def download_update(info, destination_root=None, progress=None, canceled=None, s
     downloaded = 0
     digest = hashlib.sha256()
     try:
+        if _existing_download_is_valid(destination, info):
+            if progress:
+                progress(info.asset.size or os.path.getsize(destination), info.asset.size)
+            return destination
+        try:
+            os.remove(destination)
+        except FileNotFoundError:
+            pass
+        required_space = (info.asset.size or 0) + DISK_SPACE_MARGIN
+        if required_space and shutil.disk_usage(version_dir).free < required_space:
+            raise UpdateError("There is not enough free disk space to download and stage this update.")
         response = session.get(
             info.asset.url,
-            headers=_headers(info.version),
+            headers=_headers(client_version or APP_VERSION),
             timeout=(20, 60),
             stream=True,
         )
@@ -293,6 +434,8 @@ def download_update(info, destination_root=None, progress=None, canceled=None, s
                     raise DownloadCanceled("The update download was canceled.")
                 if not chunk:
                     continue
+                if downloaded + len(chunk) > MAX_UPDATE_BYTES:
+                    raise UpdateError("The update download exceeded ODeR's safe size limit.")
                 handle.write(chunk)
                 digest.update(chunk)
                 downloaded += len(chunk)
@@ -304,6 +447,9 @@ def download_update(info, destination_root=None, progress=None, canceled=None, s
             )
         if digest.hexdigest().casefold() != info.asset.sha256.casefold():
             raise UpdateError("The downloaded update failed SHA-256 verification and was deleted.")
+        with open(partial, "rb+") as handle:
+            os.fsync(handle.fileno())
+        _validate_update_payload(partial, info.asset.name)
         os.replace(partial, destination)
         return destination
     except OSError as exc:
