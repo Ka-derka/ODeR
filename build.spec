@@ -5,6 +5,38 @@
 
 block_cipher = None
 
+from core.version import APP_VERSION
+from PyInstaller.utils.win32.versioninfo import (
+    FixedFileInfo,
+    StringFileInfo,
+    StringStruct,
+    StringTable,
+    VSVersionInfo,
+    VarFileInfo,
+    VarStruct,
+)
+
+version_numbers = tuple(int(part) for part in APP_VERSION.split("-", 1)[0].split("+", 1)[0].split("."))
+version_tuple = (version_numbers + (0, 0, 0, 0))[:4]
+windows_version_info = VSVersionInfo(
+    ffi=FixedFileInfo(filevers=version_tuple, prodvers=version_tuple),
+    kids=[
+        StringFileInfo([
+            StringTable("040904B0", [
+                StringStruct("CompanyName", "kaderka"),
+                StringStruct("FileDescription", "ODeR — Offline Directory Browser"),
+                StringStruct("FileVersion", APP_VERSION),
+                StringStruct("InternalName", "ODeR"),
+                StringStruct("LegalCopyright", "Copyright © 2026 kaderka"),
+                StringStruct("OriginalFilename", "ODeR-Portable.exe"),
+                StringStruct("ProductName", "ODeR"),
+                StringStruct("ProductVersion", APP_VERSION),
+            ]),
+        ]),
+        VarFileInfo([VarStruct("Translation", [1033, 1200])]),
+    ],
+)
+
 a = Analysis(
     ['main.py'],
     pathex=[],
@@ -36,6 +68,7 @@ exe = EXE(
     disable_windowed_traceback=False,
     argv_emulation=False,
     icon='icon.ico',
+    version=windows_version_info,
 )
 # Passing a.binaries / a.datas directly into EXE() (rather than COLLECT())
 # is what makes this a single-file build.

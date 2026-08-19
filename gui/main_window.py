@@ -146,7 +146,7 @@ QPushButton:disabled, QToolButton:disabled { background: @DISABLED@; color: @DIS
 QPushButton#accentButton { background: @ACCENT@; border-color: @ACCENT@; color: @ACCENT_TEXT@; font-weight: 600; }
 QPushButton#accentButton:hover { background: @ACCENT_HOVER@; border-color: @ACCENT_HOVER@; }
 QPushButton#tableButton { padding: 0; min-width: 78px; max-width: 78px; min-height: 27px; max-height: 27px; text-align: center; }
-QPushButton#rowActionButton { padding: 0; min-width: 76px; max-width: 76px; min-height: 25px; max-height: 25px; text-align: center; }
+QPushButton#rowActionButton { padding: 0; min-width: 74px; max-width: 74px; min-height: 22px; max-height: 22px; text-align: center; }
 QPushButton#smallActionButton { padding: 0 10px; min-width: 88px; max-width: 88px; min-height: 28px; max-height: 28px; text-align: center; }
 QWidget#tabRow { background: @BUTTON@; border: 1px solid @BUTTON_BORDER@; border-radius: 5px; }
 QWidget#tabRow[selected="true"] { background: @SELECTION@; border-color: @ACCENT@; }
@@ -176,6 +176,7 @@ QListWidget { background: @BACKGROUND@; border: none; outline: none; }
 QListWidget::item { padding: 7px 10px; margin: 1px 0; border-radius: 5px; }
 QTreeWidget, QTableWidget { background: @BACKGROUND@; color: @TEXT@; border: none; outline: none; gridline-color: @BUTTON_BORDER@; alternate-background-color: @CARD@; }
 QTreeWidget::item, QTableWidget::item { padding: 7px 4px; }
+QTreeWidget#browserFileList::item { padding: 0 4px; }
 QTreeWidget::item:selected, QTableWidget::item:selected, QListWidget::item:selected { background: @SELECTION@; color: @SELECTION_TEXT@; }
 QHeaderView::section { background: @HEADER@; color: @MUTED@; border: none; border-bottom: 1px solid @BUTTON_BORDER@; padding: 8px; font-size: 11px; }
 QProgressBar { background: @INPUT@; color: @TEXT@; border: 1px solid @BUTTON_BORDER@; border-radius: 5px; text-align: center; min-height: 15px; }

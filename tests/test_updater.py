@@ -73,6 +73,8 @@ def release(version="0.16.0", asset_name=updater.INSTALLER_ASSET_NAME, digest=No
 
 class UpdaterTests(unittest.TestCase):
     def test_version_comparison(self):
+        self.assertTrue(updater.is_newer_version("0.16.2", "0.16.1"))
+        self.assertTrue(updater.is_newer_version("0.16.1", "0.16.0"))
         self.assertTrue(updater.is_newer_version("0.16.0", "0.15.2"))
         self.assertTrue(updater.is_newer_version("0.16.0", "0.16.0-beta.1"))
         self.assertTrue(updater.is_newer_version("0.16.0-beta.10", "0.16.0-beta.2"))

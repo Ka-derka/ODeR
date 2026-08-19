@@ -60,7 +60,7 @@ Unsigned first releases may trigger a Windows SmartScreen warning. Do not descri
 ## Publish on GitHub
 
 1. Commit and push the exact source used for the binaries.
-2. Open **Releases**, choose **Draft a new release**, and create the tag matching the application version, such as `v0.16.0`.
+2. Open **Releases**, choose **Draft a new release**, and create the tag matching the application version, such as `v0.16.2`.
 3. Attach the four release assets listed above.
 4. Add release notes from `CHANGELOG.md` and save a draft.
 5. Download and re-test the draft assets, then publish the release.

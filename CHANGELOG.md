@@ -4,6 +4,16 @@ Notable changes to ODeR are recorded here.
 
 ## Unreleased
 
+## 0.16.2 — 2026-08-19
+
+- Corrected the remaining file-row button alignment problem at scaled display settings.
+- Kept expanded site groups open while the Downloads page refreshes each second.
+
+## 0.16.1 — 2026-08-19
+
+- Limited ODeR to one instance per Windows user; repeated launches now focus the existing window and forward `.oder` file-open requests to it.
+- Centered file-row action buttons with reliable vertical and right-edge spacing at different display scales.
+
 ## 0.16.0 — 2026-08-19
 
 - Added automatic daily and manual in-app update checks against GitHub Releases.
@@ -12,8 +22,6 @@ Notable changes to ODeR are recorded here.
 - Added mandatory SHA-256 validation using GitHub asset digests with `SHA256SUMS.txt` fallback; mismatched or incomplete downloads are deleted.
 - Added safe installer handoff that waits for active crawls and downloads to become idle before closing ODeR.
 - Kept portable updates non-destructive by downloading the new ZIP and opening its folder for the user.
-- Limited ODeR to one instance per Windows user; repeated launches now focus the existing window and forward `.oder` file-open requests to it.
-- Centered file-row action buttons with reliable vertical and right-edge spacing at different display scales.
 
 ## 0.15.2 — 2026-08-19
 

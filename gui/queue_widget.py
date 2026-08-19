@@ -109,8 +109,11 @@ class QueueWidget(QWidget):
             top = QTreeWidgetItem([group_name, members[0].get("profile_name", ""), status, "", ""])
             top.setData(0, Qt.UserRole, ("group", group_id))
             top.setData(0, Qt.UserRole + 1, group_id)
-            top.setExpanded(group_id in expanded or bool(summary.get("active")))
             self.tree.addTopLevelItem(top)
+            # Expansion only sticks after the item belongs to the tree. Setting
+            # it before insertion made an opened site group collapse again on
+            # the next one-second refresh.
+            top.setExpanded(group_id in expanded or bool(summary.get("active")))
             bar = QProgressBar()
             bar.setValue(summary.get("percent", 0))
             bar.setFormat(f"{fmt_bytes(summary.get('bytes_done'))} / {fmt_bytes(summary.get('bytes_total'))}")

@@ -11,6 +11,45 @@ from core import applog
 from core.settings import load_settings
 
 
+class FileActionsWidget(QWidget):
+    """Right-aligned row actions that remain centered at every display scale."""
+
+    BUTTON_WIDTH = 76
+    BUTTON_HEIGHT = 24
+    BUTTON_GAP = 6
+    RIGHT_INSET = 8
+
+    def __init__(self, download_callback, copy_callback, parent=None):
+        super().__init__(parent)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setMinimumWidth(self.BUTTON_WIDTH * 2 + self.BUTTON_GAP + self.RIGHT_INSET)
+
+        self.download_button = QPushButton("Download", self)
+        self.download_button.setObjectName("rowActionButton")
+        self.download_button.clicked.connect(lambda _checked=False: download_callback())
+
+        self.copy_button = QPushButton("Copy link", self)
+        self.copy_button.setObjectName("rowActionButton")
+        self.copy_button.setToolTip(
+            "Copy the direct URL — paste into a regular browser tab if a site's own "
+            "download protection (e.g. Cloudflare) blocks the app's download."
+        )
+        self.copy_button.clicked.connect(lambda _checked=False: copy_callback())
+
+    def resizeEvent(self, event):
+        total_width = self.BUTTON_WIDTH * 2 + self.BUTTON_GAP
+        left = max(0, self.width() - self.RIGHT_INSET - total_width)
+        top = max(0, (self.height() - self.BUTTON_HEIGHT) // 2)
+        self.download_button.setGeometry(left, top, self.BUTTON_WIDTH, self.BUTTON_HEIGHT)
+        self.copy_button.setGeometry(
+            left + self.BUTTON_WIDTH + self.BUTTON_GAP,
+            top,
+            self.BUTTON_WIDTH,
+            self.BUTTON_HEIGHT,
+        )
+        super().resizeEvent(event)
+
+
 class BrowserWidget(QWidget):
     navigate_requested = Signal(str)
     update_folder_requested = Signal(str)
@@ -103,6 +142,7 @@ class BrowserWidget(QWidget):
         self.status_label.setObjectName("mutedLabel")
 
         self.list_widget = QTreeWidget()
+        self.list_widget.setObjectName("browserFileList")
         self.list_widget.setHeaderLabels(["Name", "Size", "Type", "Actions"])
         self.list_widget.setRootIsDecorated(False)
         self.list_widget.setAlternatingRowColors(False)
@@ -294,26 +334,10 @@ class BrowserWidget(QWidget):
             self.list_widget.addTopLevelItem(item)
             self._visible_urls.append(url)
             if not child["is_dir"]:
-                actions = QWidget()
-                actions.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-                actions.setMinimumSize(166, 35)
-                actions_layout = QHBoxLayout(actions)
-                actions_layout.setContentsMargins(0, 4, 8, 4)
-                actions_layout.setSpacing(6)
-                actions_layout.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                actions_layout.addStretch(1)
-                dl_btn = QPushButton("Download")
-                dl_btn.setObjectName("rowActionButton")
-                dl_btn.setFixedSize(76, 25)
-                dl_btn.clicked.connect(lambda _, u=url, n=child["name"]: self._download(u, n))
-                actions_layout.addWidget(dl_btn)
-                copy_btn = QPushButton("Copy link")
-                copy_btn.setObjectName("rowActionButton")
-                copy_btn.setFixedSize(76, 25)
-                copy_btn.setToolTip("Copy the direct URL — paste into a regular browser tab if a "
-                                     "site's own download protection (e.g. Cloudflare) blocks the app's download.")
-                copy_btn.clicked.connect(lambda _, u=url: self._copy_link(u))
-                actions_layout.addWidget(copy_btn)
+                actions = FileActionsWidget(
+                    lambda u=url, n=child["name"]: self._download(u, n),
+                    lambda u=url: self._copy_link(u),
+                )
                 self.list_widget.setItemWidget(item, 3, actions)
 
         shown = len(children)
