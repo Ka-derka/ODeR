@@ -9,7 +9,7 @@ class ProfileDialog(QDialog):
 
     def __init__(self, parent=None, profile=None):
         super().__init__(parent)
-        self.setWindowTitle("Edit Site" if profile else "Add Site")
+        self.setWindowTitle("Edit Library" if profile else "Add Library")
         self.setMinimumWidth(520)
         self._profile = profile
 

@@ -11,14 +11,19 @@ sys.path.insert(0, str(ROOT))
 from core.version import APP_VERSION  # noqa: E402
 
 
-CANONICAL_VERSION = re.compile(r"^\d+\.\d+\.\d+$")
+CANONICAL_VERSION = re.compile(
+    r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+)
 
 
 def verify_release_metadata(root=ROOT):
     root = Path(root)
     errors = []
     if not CANONICAL_VERSION.fullmatch(APP_VERSION):
-        errors.append(f"core/version.py must use MAJOR.MINOR.PATCH, not {APP_VERSION!r}")
+        errors.append(
+            "core/version.py must use MAJOR.MINOR.PATCH with an optional canonical "
+            f"prerelease suffix, not {APP_VERSION!r}"
+        )
 
     installer = (root / "installer.iss").read_text(encoding="utf-8")
     match = re.search(r'^#define MyAppVersion "([^"]+)"', installer, re.MULTILINE)

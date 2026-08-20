@@ -8,11 +8,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 try:
     from PySide6.QtCore import QRect, Qt
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QPushButton, QToolButton
     from gui.browser_widget import BrowserWidget
     from gui.queue_widget import QueueWidget
     from gui.logs_page import LogsPage
-    from gui.main_window import ActivityPage, HomePage
+    from gui.main_window import ActivityPage, HomePage, LibraryTile, MainWindow, SettingsPage
     from gui.profile_dialog import ProfileDialog
     PYSIDE_AVAILABLE = True
 except ModuleNotFoundError:
@@ -222,6 +222,75 @@ class BrowserLayoutTests(unittest.TestCase):
             )
             self.assertIn("10 items", widget._meta_labels[profile["id"]].text())
             widget.close()
+
+    def test_home_uses_square_library_tiles_with_overflow_actions(self):
+        profiles = [
+            {
+                "id": f"library-{index}", "name": f"Library {index}",
+                "base_url": f"https://example{index}.test/", "last_crawled": None,
+            }
+            for index in range(4)
+        ]
+        widget = HomePage()
+        widget.resize(1120, 700)
+        widget.refresh(profiles)
+        widget.show()
+        self.app.processEvents()
+        self.app.processEvents()
+
+        self.assertEqual(len(widget._tiles), 4)
+        self.assertTrue(all(isinstance(tile, LibraryTile) for tile in widget._tiles))
+        self.assertTrue(all(tile.width() == tile.height() for tile in widget._tiles))
+        self.assertGreaterEqual(widget._last_column_count, 3)
+        menu_button = widget._tiles[0].findChild(QToolButton, "libraryMenuButton")
+        self.assertIsNotNone(menu_button)
+        self.assertEqual(
+            [action.text() for action in menu_button.menu().actions() if not action.isSeparator()],
+            ["Settings", "Information", "Export .oder…"],
+        )
+        visible_buttons = {button.text() for button in widget.findChildren(QPushButton)}
+        self.assertNotIn("Import .oder", visible_buttons)
+        self.assertNotIn("Add library", visible_buttons)
+        self.assertNotIn("Settings", visible_buttons)
+        widget.close()
+
+    def test_sidebar_utilities_collapse_and_downloads_live_in_status_bar(self):
+        with (
+            patch("gui.main_window.load_profiles", return_value=[]),
+            patch("gui.main_window.downloader.start_background_worker"),
+            patch("gui.main_window.applog.log"),
+            patch("gui.main_window.MainWindow._start_home_stats_refresh"),
+            patch("gui.main_window.save_settings") as save,
+        ):
+            window = MainWindow()
+            window.timer.stop()
+            window.show()
+            self.app.processEvents()
+
+            self.assertFalse(hasattr(window, "downloads_btn"))
+            self.assertEqual(window.status_downloads_btn.text(), "Downloads")
+            self.assertGreater(window.favorites_btn.y(), window.new_btn.y())
+            self.assertGreater(window.utility_toggle.y(), window.favorites_btn.y())
+            self.assertEqual(window.utility_toggle.width(), window.new_btn.width())
+            window._toggle_utility_section(False)
+            self.assertFalse(window.utility_container.isVisible())
+            save.assert_called_with({"sidebar_tools_expanded": False})
+            with patch(
+                "gui.main_window.downloader.load_queue",
+                return_value=[{"status": "pending"}, {"status": "downloading"}],
+            ):
+                window._refresh_downloads_status_button()
+            self.assertEqual(window.status_downloads_btn.text(), "Downloads · 2")
+            window.hide()
+            window.deleteLater()
+            self.app.processEvents()
+
+    def test_settings_has_no_manual_import_button(self):
+        widget = SettingsPage()
+        labels = {button.text() for button in widget.findChildren(QPushButton)}
+        self.assertNotIn("Import .oder…", labels)
+        self.assertIn("Compare two .oder files…", labels)
+        widget.close()
 
     def test_profile_dialog_preserves_exact_hosted_package_url(self):
         profile = {

@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import os
 import sys
 import threading
@@ -13,7 +14,7 @@ from PySide6.QtWidgets import (
     QFormLayout, QComboBox, QCheckBox, QSpinBox, QDoubleSpinBox, QFileDialog, QColorDialog,
     QProgressDialog, QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView
 )
-from PySide6.QtCore import Qt, QTimer, Signal, Slot, QThread, QStandardPaths, QUrl
+from PySide6.QtCore import Qt, QTimer, Signal, Slot, QThread, QStandardPaths, QUrl, QEvent
 from PySide6.QtGui import QShortcut, QKeySequence, QColor, QDesktopServices
 
 from core.profiles import load_profiles, create_profile, update_profile, delete_profile, get_profile
@@ -183,6 +184,20 @@ QHeaderView::section { background: @HEADER@; color: @MUTED@; border: none; borde
 QProgressBar { background: @INPUT@; color: @TEXT@; border: 1px solid @BUTTON_BORDER@; border-radius: 5px; text-align: center; min-height: 15px; }
 QProgressBar::chunk { background: @ACCENT@; border-radius: 4px; }
 QFrame#card { background: @CARD@; border: 1px solid @BUTTON_BORDER@; border-radius: 8px; }
+QFrame#libraryTile { background: @CARD@; border: 1px solid @BUTTON_BORDER@; border-radius: 9px; }
+QFrame#libraryTile:hover { border-color: @ACCENT@; }
+QLabel#libraryTitle { font-size: 15px; font-weight: 650; color: @TEXT@; }
+QLabel#libraryMeta { color: @MUTED@; font-size: 11px; }
+QToolButton#libraryMenuButton {
+    background: rgba(12, 15, 22, 190); color: #FFFFFF; border: 1px solid rgba(255, 255, 255, 70);
+    border-radius: 5px; padding: 0; min-width: 28px; max-width: 28px; min-height: 25px; max-height: 25px;
+    font-size: 17px; font-weight: 700;
+}
+QToolButton#libraryMenuButton:hover { background: rgba(12, 15, 22, 235); border-color: rgba(255, 255, 255, 150); }
+QToolButton#libraryMenuButton::menu-indicator { image: none; width: 0; height: 0; }
+QToolButton#sidebarSectionToggle { min-height: 26px; max-height: 30px; padding: 2px 7px; text-align: left; border-radius: 4px; }
+QFrame#sidebarUtilityContainer { background: transparent; border: none; }
+QPushButton#statusDownloadsButton { min-height: 22px; max-height: 24px; padding: 0 10px; margin: 1px 2px; border-radius: 4px; }
 QFrame#updateBanner { background: @SELECTION@; border: 1px solid @ACCENT@; border-radius: 8px; }
 QLabel#updateBannerTitle { color: @TEXT@; font-weight: 600; }
 QLabel#cardTitle { font-size: 15px; font-weight: 600; color: @TEXT@; }
@@ -258,13 +273,129 @@ class CacheStatsTask(QThread):
                 self.stats_failed.emit(profile_id, str(exc))
 
 
+class LibraryTile(QFrame):
+    """A compact square library launcher with an unobtrusive action menu."""
+
+    open_requested = Signal(str)
+    edit_requested = Signal(str)
+    info_requested = Signal(str)
+    export_requested = Signal(str)
+
+    _COVER_PALETTES = (
+        ("#4C1D95", "#7C3AED"),
+        ("#075985", "#0EA5E9"),
+        ("#14532D", "#22C55E"),
+        ("#7C2D12", "#F97316"),
+        ("#831843", "#EC4899"),
+        ("#1E3A8A", "#6366F1"),
+    )
+
+    def __init__(self, profile, meta_text, parent=None):
+        super().__init__(parent)
+        self.profile_id = profile["id"]
+        self.setObjectName("libraryTile")
+        self.setFixedSize(218, 218)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setToolTip(f"Open {profile['name']}")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(9, 9, 9, 10)
+        layout.setSpacing(8)
+
+        cover = QFrame()
+        cover.setObjectName("libraryCover")
+        cover.setFixedHeight(124)
+        digest = hashlib.sha256(
+            f"{profile.get('id', '')}:{profile.get('name', '')}".encode("utf-8", "replace")
+        ).digest()
+        start, end = self._COVER_PALETTES[digest[0] % len(self._COVER_PALETTES)]
+        cover.setStyleSheet(
+            "QFrame#libraryCover {"
+            f"background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {start}, stop:1 {end});"
+            "border: none; border-radius: 7px; }"
+        )
+        cover_layout = QVBoxLayout(cover)
+        cover_layout.setContentsMargins(10, 8, 8, 9)
+        cover_layout.setSpacing(0)
+
+        menu_row = QHBoxLayout()
+        menu_row.addStretch(1)
+        menu_button = QToolButton()
+        menu_button.setObjectName("libraryMenuButton")
+        menu_button.setText("⋯")
+        menu_button.setCursor(Qt.PointingHandCursor)
+        menu_button.setToolTip(f"Actions for {profile['name']}")
+        menu_button.setPopupMode(QToolButton.InstantPopup)
+        menu = QMenu(menu_button)
+        settings_action = menu.addAction("Settings")
+        info_action = menu.addAction("Information")
+        menu.addSeparator()
+        export_action = menu.addAction("Export .oder…")
+        settings_action.triggered.connect(lambda: self.edit_requested.emit(self.profile_id))
+        info_action.triggered.connect(lambda: self.info_requested.emit(self.profile_id))
+        export_action.triggered.connect(lambda: self.export_requested.emit(self.profile_id))
+        menu_button.setMenu(menu)
+        menu_row.addWidget(menu_button)
+        cover_layout.addLayout(menu_row)
+
+        cover_layout.addStretch(1)
+        initial = QLabel((profile.get("name") or "L").strip()[:1].upper() or "L")
+        initial.setAlignment(Qt.AlignCenter)
+        initial.setStyleSheet(
+            "background: transparent; color: white; font-size: 42px; font-weight: 700;"
+        )
+        cover_layout.addWidget(initial)
+        cover_layout.addStretch(1)
+        host = str(profile.get("base_url") or "").split("://", 1)[-1].split("/", 1)[0]
+        host_label = QLabel(host or "Offline library")
+        host_label.setAlignment(Qt.AlignCenter)
+        host_label.setStyleSheet(
+            "background: transparent; color: rgba(255, 255, 255, 220); font-size: 10px;"
+        )
+        host_label.setToolTip(profile.get("base_url", ""))
+        cover_layout.addWidget(host_label)
+        layout.addWidget(cover)
+
+        title = QLabel(profile["name"])
+        title.setObjectName("libraryTitle")
+        title.setWordWrap(True)
+        title.setMaximumHeight(38)
+        layout.addWidget(title)
+        self.meta_label = QLabel(meta_text)
+        self.meta_label.setObjectName("libraryMeta")
+        self.meta_label.setWordWrap(True)
+        self.meta_label.setMaximumHeight(34)
+        layout.addWidget(self.meta_label)
+        for clickable in (cover, initial, host_label, title, self.meta_label):
+            clickable.installEventFilter(self)
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
+            self.open_requested.emit(self.profile_id)
+            return True
+        return super().eventFilter(watched, event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self.rect().contains(event.position().toPoint()):
+            self.open_requested.emit(self.profile_id)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
+            self.open_requested.emit(self.profile_id)
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
 class HomePage(QWidget):
     open_site_requested = Signal(str)
     export_site_requested = Signal(str)
-    add_site_requested = Signal()
-    import_directory_requested = Signal()
-    open_downloads_requested = Signal()
-    open_settings_requested = Signal()
+    edit_site_requested = Signal(str)
+    info_site_requested = Signal(str)
     update_requested = Signal()
 
     def __init__(self, parent=None):
@@ -294,31 +425,33 @@ class HomePage(QWidget):
         self.update_banner.hide()
         self.layout.addWidget(self.update_banner)
 
-        quick = QHBoxLayout()
-        quick.setSpacing(10)
-        for label, signal in (("Add site", self.add_site_requested),
-                              ("Import .oder", self.import_directory_requested),
-                              ("Downloads", self.open_downloads_requested),
-                              ("Settings", self.open_settings_requested)):
-            btn = QPushButton(label)
-            btn.setObjectName("smallActionButton")
-            btn.setMinimumHeight(42)
-            btn.clicked.connect(lambda _=False, sig=signal: sig.emit())
-            quick.addWidget(btn)
-        self.layout.addLayout(quick)
-
-        section = QLabel("MY LOCATIONS")
+        section_row = QHBoxLayout()
+        section_row.setSpacing(10)
+        section = QLabel("MY LIBRARIES")
         section.setObjectName("sectionLabel")
-        self.layout.addWidget(section)
+        section_row.addWidget(section)
+        section_row.addStretch(1)
+        drop_hint = QLabel("Drop an .oder file anywhere to add a library")
+        drop_hint.setObjectName("mutedLabel")
+        section_row.addWidget(drop_hint)
+        self.layout.addLayout(section_row)
+        self.cards_scroll = QScrollArea()
+        self.cards_scroll.setWidgetResizable(True)
+        self.cards_scroll.setFrameShape(QFrame.NoFrame)
+        self.cards_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.cards_scroll.viewport().installEventFilter(self)
         self.cards_wrap = QWidget()
         self.cards_grid = QGridLayout(self.cards_wrap)
         self.cards_grid.setContentsMargins(0, 0, 0, 0)
         self.cards_grid.setSpacing(12)
-        self.layout.addWidget(self.cards_wrap)
-        self.layout.addStretch(1)
+        self.cards_grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.cards_scroll.setWidget(self.cards_wrap)
+        self.layout.addWidget(self.cards_scroll, 1)
         self._profiles = {}
         self._meta_labels = {}
         self._stats = {}
+        self._tiles = []
+        self._last_column_count = 0
         self.refresh([])
 
     def show_update(self, info):
@@ -332,8 +465,9 @@ class HomePage(QWidget):
 
     @staticmethod
     def _meta_text(profile, counts):
+        last_crawled = str(profile.get("last_crawled") or "Not updated").replace("T", " ")[:16]
         if counts is None:
-            return f"Index statistics loading…  ·  {profile.get('last_crawled') or 'Not updated'}"
+            return f"Loading index statistics…\n{last_crawled}"
         total_items = max(0, int(counts.get("entries", 0)) - 1)
         folders = int(counts.get("folders", 0))
         files = int(counts.get("files", 0))
@@ -342,10 +476,7 @@ class HomePage(QWidget):
             status = "Hosted .oder ✓"
         else:
             status = "Cached ✓" if total_items > 0 else "No cache yet"
-        return (
-            f"{total_items:,} items  ·  {folders:,} folders  ·  {files:,} files  ·  "
-            f"{status}  ·  {profile.get('last_crawled') or 'Not updated'}"
-        )
+        return f"{total_items:,} items · {folders:,} folders · {files:,} files\n{status} · {last_crawled}"
 
     def update_profile_stats(self, profile_id, counts, profile=None):
         if counts is not None:
@@ -364,40 +495,51 @@ class HomePage(QWidget):
                 item.widget().deleteLater()
         self._profiles = {profile["id"]: dict(profile) for profile in profiles}
         self._meta_labels = {}
+        self._tiles = []
+        self._last_column_count = 0
         live_ids = set(self._profiles)
         self._stats = {profile_id: stats for profile_id, stats in self._stats.items()
                        if profile_id in live_ids}
         if not profiles:
-            empty = QLabel("No sites yet. Add a site to start building your offline library.")
+            empty = QLabel("No libraries yet. Add one, or drop an .oder package into ODeR.")
             empty.setObjectName("mutedLabel")
             self.cards_grid.addWidget(empty, 0, 0)
             return
-        for idx, profile in enumerate(profiles):
-            card = QFrame()
-            card.setObjectName("card")
-            layout = QVBoxLayout(card)
-            layout.setContentsMargins(16, 14, 16, 14)
-            name = QLabel(profile["name"])
-            name.setObjectName("cardTitle")
-            layout.addWidget(name)
-            url = QLabel(profile.get("base_url", ""))
-            url.setObjectName("cardMeta")
-            url.setWordWrap(True)
-            layout.addWidget(url)
-            meta = QLabel(self._meta_text(profile, self._stats.get(profile["id"])))
-            meta.setObjectName("cardMeta")
-            layout.addWidget(meta)
-            self._meta_labels[profile["id"]] = meta
-            actions = QHBoxLayout()
-            open_btn = QPushButton("Open tab")
-            open_btn.clicked.connect(lambda _, pid=profile["id"]: self.open_site_requested.emit(pid))
-            actions.addWidget(open_btn)
-            export_btn = QPushButton("Export .oder")
-            export_btn.clicked.connect(lambda _, pid=profile["id"]: self.export_site_requested.emit(pid))
-            actions.addWidget(export_btn)
-            layout.addLayout(actions)
-            row, col = divmod(idx, 2)
-            self.cards_grid.addWidget(card, row, col)
+        for profile in profiles:
+            tile = LibraryTile(profile, self._meta_text(profile, self._stats.get(profile["id"])))
+            tile.open_requested.connect(self.open_site_requested.emit)
+            tile.edit_requested.connect(self.edit_site_requested.emit)
+            tile.info_requested.connect(self.info_site_requested.emit)
+            tile.export_requested.connect(self.export_site_requested.emit)
+            self._tiles.append(tile)
+            self._meta_labels[profile["id"]] = tile.meta_label
+        self._relayout_tiles()
+
+    def _relayout_tiles(self):
+        if not self._tiles:
+            return
+        available = max(218, self.cards_scroll.viewport().width())
+        columns = max(1, available // 230)
+        if columns == self._last_column_count and self.cards_grid.count() == len(self._tiles):
+            return
+        self._last_column_count = columns
+        while self.cards_grid.count():
+            self.cards_grid.takeAt(0)
+        for index, tile in enumerate(self._tiles):
+            row, column = divmod(index, columns)
+            self.cards_grid.addWidget(tile, row, column)
+        self.cards_grid.invalidate()
+        self.cards_grid.activate()
+        self.cards_wrap.updateGeometry()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        QTimer.singleShot(0, self._relayout_tiles)
+
+    def eventFilter(self, watched, event):
+        if watched is self.cards_scroll.viewport() and event.type() == QEvent.Resize:
+            QTimer.singleShot(0, self._relayout_tiles)
+        return super().eventFilter(watched, event)
 
 
 class SearchPage(QWidget):
@@ -433,7 +575,7 @@ class SearchPage(QWidget):
         self.folders_only.setChecked(True)
         self.save_search_btn = QPushButton("Save search")
         self.save_search_btn.clicked.connect(self._save_search)
-        for widget in (QLabel("Site:"), self.site_filter, QLabel("Type:"), self.type_filter,
+        for widget in (QLabel("Library:"), self.site_filter, QLabel("Type:"), self.type_filter,
                        QLabel("Size:"), self.size_filter, self.files_only, self.folders_only,
                        self.save_search_btn):
             filters.addWidget(widget)
@@ -454,7 +596,7 @@ class SearchPage(QWidget):
         selected = self.site_filter.currentData()
         self.site_filter.blockSignals(True)
         self.site_filter.clear()
-        self.site_filter.addItem("All sites", None)
+        self.site_filter.addItem("All libraries", None)
         for profile in load_profiles():
             self.site_filter.addItem(profile["name"], profile["id"])
         index = self.site_filter.findData(selected)
@@ -613,7 +755,6 @@ class SettingsPage(QWidget):
     settings_changed = Signal()
     check_updates_requested = Signal(str)
     skipped_update_cleared = Signal()
-    import_directory_requested = Signal()
     compare_packages_requested = Signal()
     open_storage_requested = Signal()
     open_changes_requested = Signal()
@@ -630,7 +771,7 @@ class SettingsPage(QWidget):
         self.dl_concurrency=QSpinBox(); self.dl_concurrency.setRange(1,64); self.dl_concurrency.setValue(int(self._settings.get('download_concurrency',2))); sf.addRow("Global download concurrency",self.dl_concurrency)
         self.dl_delay=QDoubleSpinBox(); self.dl_delay.setRange(0,60); self.dl_delay.setDecimals(2); self.dl_delay.setSuffix(' s'); self.dl_delay.setValue(float(self._settings.get('download_start_delay',0.5))); sf.addRow("Delay between download starts",self.dl_delay)
         self.overwrite_downloads=QCheckBox("Keep existing completed files and skip them"); self.overwrite_downloads.setChecked(bool(self._settings.get('skip_existing_downloads',True))); sf.addRow(self.overwrite_downloads)
-        structure_hint=QLabel("Downloads are stored beneath a folder for each directory and automatically recreate the source folder hierarchy. Unsafe Windows path characters and name collisions are handled without flattening the rest of the structure."); structure_hint.setObjectName('mutedLabel'); structure_hint.setWordWrap(True); sf.addRow('Folder structure',structure_hint)
+        structure_hint=QLabel("Downloads are stored beneath a folder for each library and automatically recreate the source folder hierarchy. Unsafe Windows path characters and name collisions are handled without flattening the rest of the structure."); structure_hint.setObjectName('mutedLabel'); structure_hint.setWordWrap(True); sf.addRow('Folder structure',structure_hint)
         form.addWidget(storage)
 
         network=CollapsibleSection("Networking", "timeouts, rate limits and browser fallback", True, layout_type="form"); nf=network.body_layout
@@ -666,12 +807,12 @@ class SettingsPage(QWidget):
         af.addRow('',custom_actions); form.addWidget(appearance)
 
         behavior=CollapsibleSection("Behavior & cache", "startup checks and progressive browsing", False, layout_type="form"); bf=behavior.body_layout
-        self.lazy=QCheckBox('Enable progressive/lazy directory browsing'); self.lazy.setChecked(bool(self._settings.get('lazy_directory_browsing',True))); bf.addRow(self.lazy)
-        self.startup_check=QCheckBox('Check saved directories at startup (local cache only)'); self.startup_check.setChecked(bool(self._settings.get('startup_check_directories',True))); bf.addRow(self.startup_check)
+        self.lazy=QCheckBox('Enable progressive/lazy library browsing'); self.lazy.setChecked(bool(self._settings.get('lazy_directory_browsing',True))); bf.addRow(self.lazy)
+        self.startup_check=QCheckBox('Check saved libraries at startup (local cache only)'); self.startup_check.setChecked(bool(self._settings.get('startup_check_directories',True))); bf.addRow(self.startup_check)
         self.startup_init=QCheckBox('Initialize/migrate saved caches at startup'); self.startup_init.setChecked(bool(self._settings.get('startup_initialize_caches',True))); bf.addRow(self.startup_init)
-        self.confirm_full=QCheckBox('Confirm before a full site update'); self.confirm_full.setChecked(bool(self._settings.get('confirm_full_updates',True))); bf.addRow(self.confirm_full)
+        self.confirm_full=QCheckBox('Confirm before a full library update'); self.confirm_full.setChecked(bool(self._settings.get('confirm_full_updates',True))); bf.addRow(self.confirm_full)
         self.resume_startup=QCheckBox('Resume unfinished crawls when ODeR starts'); self.resume_startup.setChecked(bool(self._settings.get('resume_crawls_at_startup',False))); bf.addRow(self.resume_startup)
-        self.notify_changes=QCheckBox('Show a notification when directory contents change'); self.notify_changes.setChecked(bool(self._settings.get('notify_directory_changes',True))); bf.addRow(self.notify_changes)
+        self.notify_changes=QCheckBox('Show a notification when library contents change'); self.notify_changes.setChecked(bool(self._settings.get('notify_directory_changes',True))); bf.addRow(self.notify_changes)
         self.stale_days=QSpinBox(); self.stale_days.setRange(1,3650); self.stale_days.setSuffix(' days'); self.stale_days.setValue(int(self._settings.get('incremental_stale_days',7))); bf.addRow('Incremental update age',self.stale_days)
         self.page_size=QSpinBox(); self.page_size.setRange(50,5000); self.page_size.setSingleStep(50); self.page_size.setValue(int(self._settings.get('browser_page_size',500))); bf.addRow('Entries per browser page',self.page_size); form.addWidget(behavior)
 
@@ -682,7 +823,7 @@ class SettingsPage(QWidget):
         self.auto_updates=QCheckBox('Automatically check for updates once per day'); self.auto_updates.setChecked(bool(self._settings.get('automatic_update_checks',True))); uf.addRow(self.auto_updates)
         self.update_channel=QComboBox(); self.update_channel.addItem('Stable releases','stable'); self.update_channel.addItem('Preview releases','preview')
         channel_index=self.update_channel.findData(self._settings.get('update_channel','stable')); self.update_channel.setCurrentIndex(channel_index if channel_index >= 0 else 0); uf.addRow('Update channel',self.update_channel)
-        update_hint=QLabel('Checks contact GitHub only and do not send directory URLs, searches, downloads, or other usage data.')
+        update_hint=QLabel('Checks contact GitHub only and do not send library URLs, searches, downloads, or other usage data.')
         update_hint.setObjectName('mutedLabel'); update_hint.setWordWrap(True); uf.addRow('',update_hint)
         self.update_status=QLabel(); self.update_status.setObjectName('mutedLabel'); self.update_status.setWordWrap(True); uf.addRow('Status',self.update_status)
         update_actions=QHBoxLayout(); check_now=QPushButton('Check now'); check_now.clicked.connect(self._check_now); update_actions.addWidget(check_now)
@@ -691,14 +832,13 @@ class SettingsPage(QWidget):
         self.set_update_status(); form.addWidget(updates)
 
         keyboard=CollapsibleSection("Keyboard", "quick navigation and actions", False); kg=QGridLayout(); kg.setHorizontalSpacing(16); kg.setVerticalSpacing(7)
-        for i,(key,desc) in enumerate([('Ctrl+T','New tab'),('Ctrl+W','Close tab'),('Ctrl+L','Focus search'),('Ctrl+F','Search current folder'),('F5','Update current folder'),('Ctrl+Shift+F5','Update entire site'),('Alt+Left / Alt+Right','Back / forward')]):
+        for i,(key,desc) in enumerate([('Ctrl+T','New tab'),('Ctrl+W','Close tab'),('Ctrl+L','Focus search'),('Ctrl+F','Search current folder'),('F5','Update current folder'),('Ctrl+Shift+F5','Update entire library'),('Alt+Left / Alt+Right','Back / forward')]):
             badge=QLabel(key); badge.setObjectName('shortcutBadge'); badge.setAlignment(Qt.AlignCenter); kg.addWidget(badge,i,0); kg.addWidget(QLabel(desc),i,1)
         keyboard.body_layout.addLayout(kg); form.addWidget(keyboard)
 
         packaging=CollapsibleSection("Application & packages", ".oder transfer and application storage", False); info=QLabel(f"ODeR {APP_VERSION}\nData folder: {data_dir()}\nPortable builds keep writable data beside the executable. Installed builds use the current user's local application-data folder.")
         info.setObjectName('mutedLabel'); info.setWordWrap(True); packaging.body_layout.addWidget(info)
-        package_actions=QHBoxLayout(); import_package=QPushButton('Import .oder…'); import_package.clicked.connect(self.import_directory_requested.emit); package_actions.addWidget(import_package)
-        compare_package=QPushButton('Compare two .oder files…'); compare_package.clicked.connect(self.compare_packages_requested.emit); package_actions.addWidget(compare_package)
+        package_actions=QHBoxLayout(); compare_package=QPushButton('Compare two .oder files…'); compare_package.clicked.connect(self.compare_packages_requested.emit); package_actions.addWidget(compare_package)
         storage_manager=QPushButton('Storage manager'); storage_manager.clicked.connect(self.open_storage_requested.emit); package_actions.addWidget(storage_manager)
         changes=QPushButton('Change history'); changes.clicked.connect(self.open_changes_requested.emit); package_actions.addWidget(changes)
         package_actions.addStretch(1); packaging.body_layout.addLayout(package_actions)
@@ -845,7 +985,7 @@ class ActivityPage(QWidget):
                     else "Validating and loading hosted index…"
                 )
             action = {
-                "hosted_check": "Checking for a directory-hosted .oder package",
+                "hosted_check": "Checking for a library-hosted .oder package",
                 "hosted_download": f"Downloading hosted index · {format_bytes(downloaded)} received",
                 "hosted_apply": "Validating package and replacing the cached index",
             }[phase]
@@ -911,7 +1051,7 @@ class ActivityPage(QWidget):
             name = QLabel(profile["name"])
             name.setObjectName("cardTitle")
             top.addWidget(name, 1)
-            open_btn = QPushButton("Open site")
+            open_btn = QPushButton("Open library")
             open_btn.clicked.connect(lambda _, pid=profile["id"]: self.open_site_requested.emit(pid))
             top.addWidget(open_btn)
             stop_btn = QPushButton("Stop")
@@ -1033,7 +1173,7 @@ class FavoritesPage(QWidget):
             if saved.get("kind") == "folder":
                 text = f"Folder · {saved.get('label', 'Saved folder')}\n{saved.get('url', '')}"
             else:
-                where = profile.get("name", "All sites")
+                where = profile.get("name", "All libraries")
                 text = f"Search · {saved.get('label') or saved.get('query')} · {where}"
             self.list.addItem(text)
         if not self._items:
@@ -1071,7 +1211,7 @@ class StoragePage(QWidget):
         hint.setObjectName("mutedLabel")
         layout.addWidget(hint)
         self.table = QTableWidget(0, 7)
-        self.table.setHorizontalHeaderLabels(["Directory", "Entries", "Pending", "Index size", "Search", "Last scan", "Snapshots"])
+        self.table.setHorizontalHeaderLabels(["Library", "Entries", "Pending", "Index size", "Search", "Last scan", "Snapshots"])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -1135,7 +1275,7 @@ class ChangesPage(QWidget):
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(36, 28, 36, 28)
-        title = QLabel("Directory changes")
+        title = QLabel("Library changes")
         title.setObjectName("heroTitle")
         layout.addWidget(title)
         controls = QHBoxLayout()
@@ -1145,7 +1285,7 @@ class ChangesPage(QWidget):
         self.snapshot.currentIndexChanged.connect(self.refresh_changes)
         export = QPushButton("Export CSV…")
         export.clicked.connect(self._export_csv)
-        controls.addWidget(QLabel("Directory:"))
+        controls.addWidget(QLabel("Library:"))
         controls.addWidget(self.profile)
         controls.addWidget(QLabel("Snapshot:"))
         controls.addWidget(self.snapshot, 1)
@@ -1284,25 +1424,40 @@ class MainWindow(QMainWindow):
         self.tab_scroll.setWidget(self.tab_container)
         sl.addWidget(self.tab_scroll, 1)
 
+        self.add_btn = QPushButton("Add library")
+        self.add_btn.setObjectName("sidebarAccent")
+        self.add_btn.clicked.connect(self._add_profile)
+        sl.addWidget(self.add_btn)
+
         self.new_btn = QPushButton("New tab")
         self.new_btn.setObjectName("sidebarButton")
         self.new_btn.clicked.connect(self._new_tab)
         sl.addWidget(self.new_btn)
 
-        divider = QFrame()
-        divider.setFrameShape(QFrame.HLine)
-        divider.setObjectName("divider")
-        sl.addWidget(divider)
-
-        self.downloads_btn = QPushButton("Downloads")
-        self.downloads_btn.setObjectName("sidebarButton")
-        self.downloads_btn.clicked.connect(lambda: self._show_special("downloads"))
-        self.activity_btn = QPushButton("Activity")
-        self.activity_btn.setObjectName("sidebarButton")
-        self.activity_btn.clicked.connect(lambda: self._show_special("activity"))
         self.favorites_btn = QPushButton("Favorites")
         self.favorites_btn.setObjectName("sidebarButton")
         self.favorites_btn.clicked.connect(lambda: self._show_special("favorites"))
+        sl.addWidget(self.favorites_btn)
+
+        self.utility_toggle = QToolButton()
+        self.utility_toggle.setObjectName("sidebarSectionToggle")
+        self.utility_toggle.setText("More")
+        self.utility_toggle.setCheckable(True)
+        self.utility_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.utility_toggle.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.utility_toggle.setCursor(Qt.PointingHandCursor)
+        self.utility_toggle.clicked.connect(self._toggle_utility_section)
+        sl.addWidget(self.utility_toggle)
+
+        self.utility_container = QFrame()
+        self.utility_container.setObjectName("sidebarUtilityContainer")
+        utility_layout = QVBoxLayout(self.utility_container)
+        utility_layout.setContentsMargins(0, 0, 0, 0)
+        utility_layout.setSpacing(5)
+
+        self.activity_btn = QPushButton("Activity")
+        self.activity_btn.setObjectName("sidebarButton")
+        self.activity_btn.clicked.connect(lambda: self._show_special("activity"))
         self.changes_btn = QPushButton("Changes")
         self.changes_btn.setObjectName("sidebarButton")
         self.changes_btn.clicked.connect(lambda: self._show_special("changes"))
@@ -1312,21 +1467,13 @@ class MainWindow(QMainWindow):
         self.logs_btn = QPushButton("Logs")
         self.logs_btn.setObjectName("sidebarButton")
         self.logs_btn.clicked.connect(lambda: self._show_special("logs"))
-        sl.addWidget(self.downloads_btn)
-        sl.addWidget(self.activity_btn)
-        sl.addWidget(self.favorites_btn)
-        sl.addWidget(self.changes_btn)
-        sl.addWidget(self.storage_btn)
-        sl.addWidget(self.logs_btn)
         self.settings_btn = QPushButton("Settings")
         self.settings_btn.setObjectName("sidebarButton")
         self.settings_btn.clicked.connect(lambda: self._show_special("settings"))
-        sl.addWidget(self.settings_btn)
-
-        self.add_btn = QPushButton("Add site")
-        self.add_btn.setObjectName("sidebarAccent")
-        self.add_btn.clicked.connect(self._add_profile)
-        sl.addWidget(self.add_btn)
+        for button in (self.activity_btn, self.changes_btn, self.storage_btn,
+                       self.logs_btn, self.settings_btn):
+            utility_layout.addWidget(button)
+        sl.addWidget(self.utility_container)
         root_layout.addWidget(self.sidebar)
 
         self.stack = QStackedWidget()
@@ -1344,6 +1491,12 @@ class MainWindow(QMainWindow):
         self.update_cancel_button.hide()
         self.statusBar().addPermanentWidget(self.update_progress)
         self.statusBar().addPermanentWidget(self.update_cancel_button)
+        self.status_downloads_btn = QPushButton("Downloads")
+        self.status_downloads_btn.setObjectName("statusDownloadsButton")
+        self.status_downloads_btn.setMinimumWidth(108)
+        self.status_downloads_btn.setToolTip("Open downloads")
+        self.status_downloads_btn.clicked.connect(lambda: self._show_special("downloads"))
+        self.statusBar().addPermanentWidget(self.status_downloads_btn)
 
         self.downloads = None
         self.settings = None
@@ -1699,6 +1852,19 @@ class MainWindow(QMainWindow):
             downloads = 0
         return crawls, downloads
 
+    def _refresh_downloads_status_button(self):
+        try:
+            items = downloader.load_queue()
+        except (OSError, ValueError):
+            items = []
+        active = sum(1 for item in items if item.get("status") in {"pending", "downloading"})
+        failed = sum(1 for item in items if item.get("status") == "failed")
+        self.status_downloads_btn.setText(f"Downloads · {active}" if active else "Downloads")
+        details = [f"{active} queued or active" if active else "No active downloads"]
+        if failed:
+            details.append(f"{failed} failed")
+        self.status_downloads_btn.setToolTip("Open downloads — " + ", ".join(details))
+
     def _request_installer_launch(self, path, version):
         crawls, downloads = self._active_work_counts()
         if crawls or downloads:
@@ -1748,10 +1914,8 @@ class MainWindow(QMainWindow):
         page = HomePage()
         page.open_site_requested.connect(self._open_site_tab)
         page.export_site_requested.connect(self._export_profile)
-        page.add_site_requested.connect(self._add_profile)
-        page.import_directory_requested.connect(self._import_profile_package)
-        page.open_downloads_requested.connect(lambda: self._show_special("downloads"))
-        page.open_settings_requested.connect(lambda: self._show_special("settings"))
+        page.edit_site_requested.connect(self._edit_profile_by_id)
+        page.info_site_requested.connect(self._show_library_info)
         page.update_requested.connect(self._show_update_dialog)
         if self._available_update and load_settings().get('skipped_update_version') != self._available_update.version:
             page.show_update(self._available_update)
@@ -1810,9 +1974,9 @@ class MainWindow(QMainWindow):
             return
         menu = QMenu(self)
         if key.startswith("site:"):
-            edit = menu.addAction("Edit site")
-            export_site = menu.addAction("Export directory…")
-            remove_site = menu.addAction("Remove site")
+            edit = menu.addAction("Library settings")
+            export_site = menu.addAction("Export .oder…")
+            remove_site = menu.addAction("Remove library")
             menu.addSeparator()
         else:
             edit = export_site = remove_site = None
@@ -1970,7 +2134,6 @@ class MainWindow(QMainWindow):
                 lambda channel: self._check_for_updates(manual=True, channel=channel)
             )
             self.settings.skipped_update_cleared.connect(self._restore_update_banner)
-            self.settings.import_directory_requested.connect(self._import_profile_package)
             self.settings.compare_packages_requested.connect(self._compare_package_files)
             self.settings.open_storage_requested.connect(lambda: self._show_special("storage"))
             self.settings.open_changes_requested.connect(lambda: self._show_special("changes"))
@@ -2116,6 +2279,14 @@ class MainWindow(QMainWindow):
         # shifts because of an accidental collapse/expand action.
         return None
 
+    def _toggle_utility_section(self, expanded):
+        self.utility_container.setVisible(expanded)
+        self.utility_toggle.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+        self.utility_toggle.setToolTip(
+            "Collapse library tools" if expanded else "Expand library tools downward"
+        )
+        save_settings({"sidebar_tools_expanded": bool(expanded)})
+
     def _apply_sidebar_mode(self):
         self._sidebar_collapsed = False
         self.sidebar.setFixedWidth(190)
@@ -2123,7 +2294,6 @@ class MainWindow(QMainWindow):
         self.global_search.setVisible(True)
         self.tab_section.setVisible(True)
         self.new_btn.setVisible(True)
-        self.downloads_btn.setVisible(True)
         self.activity_btn.setVisible(True)
         self.favorites_btn.setVisible(True)
         self.changes_btn.setVisible(True)
@@ -2131,30 +2301,37 @@ class MainWindow(QMainWindow):
         self.logs_btn.setVisible(True)
         self.settings_btn.setVisible(True)
         self.add_btn.setVisible(True)
-        for button in (self.new_btn, self.downloads_btn, self.activity_btn, self.favorites_btn,
+        for button in (self.new_btn, self.activity_btn, self.favorites_btn,
                        self.changes_btn, self.storage_btn, self.logs_btn, self.settings_btn):
             button.setObjectName("sidebarButton")
             button.setFixedHeight(30)
         self.add_btn.setObjectName("sidebarAccent")
         self.add_btn.setFixedHeight(30)
         self.new_btn.setText("New tab")
-        self.downloads_btn.setText("Downloads")
         self.activity_btn.setText("Activity")
         self.favorites_btn.setText("Favorites")
         self.changes_btn.setText("Changes")
         self.storage_btn.setText("Storage")
         self.logs_btn.setText("Logs")
         self.settings_btn.setText("Settings")
-        self.add_btn.setText("Add site")
+        self.add_btn.setText("Add library")
         self.new_btn.setToolTip("New tab")
-        self.downloads_btn.setToolTip("Downloads")
         self.activity_btn.setToolTip("Activity")
         self.favorites_btn.setToolTip("Favorites")
-        self.changes_btn.setToolTip("Directory changes")
+        self.changes_btn.setToolTip("Library changes")
         self.storage_btn.setToolTip("Storage manager")
         self.logs_btn.setToolTip("Logs")
         self.settings_btn.setToolTip("Settings")
-        self.add_btn.setToolTip("Add site")
+        self.add_btn.setToolTip("Add library")
+        tools_expanded = bool(load_settings().get("sidebar_tools_expanded", True))
+        self.utility_toggle.blockSignals(True)
+        self.utility_toggle.setChecked(tools_expanded)
+        self.utility_toggle.blockSignals(False)
+        self.utility_container.setVisible(tools_expanded)
+        self.utility_toggle.setArrowType(Qt.DownArrow if tools_expanded else Qt.RightArrow)
+        self.utility_toggle.setToolTip(
+            "Collapse library tools" if tools_expanded else "Expand library tools downward"
+        )
 
         for key, button in self._tab_buttons.items():
             label, _icon, _closable = self._tab_names[key]
@@ -2284,7 +2461,7 @@ class MainWindow(QMainWindow):
     def _export_profile(self, profile_id, root_url=None):
         profile = get_profile(profile_id)
         if not profile:
-            QMessageBox.warning(self, "Directory unavailable", "That directory no longer exists.")
+            QMessageBox.warning(self, "Library unavailable", "That library no longer exists.")
             return
         available = cache.database_exists(profile_id) and cache.count_crawled_dirs(profile_id) > 0
         scoped = cache.subtree_counts(profile_id, root_url) if available and root_url else {}
@@ -2315,7 +2492,7 @@ class MainWindow(QMainWindow):
         documents = QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation) or data_dir()
         suggested = os.path.join(documents, safe_name + ".oder")
         destination, _ = QFileDialog.getSaveFileName(
-            self, "Export ODeR directory", suggested, "ODeR directory package (*.oder)"
+            self, "Export ODeR library", suggested, "ODeR library package (*.oder)"
         )
         if not destination:
             return
@@ -2324,7 +2501,7 @@ class MainWindow(QMainWindow):
         include_cache = dialog.include_cache()
         profile_snapshot = dict(profile)
         self._start_package_task(
-            "Creating directory package…",
+            "Creating library package…",
             lambda: export_directory(profile_snapshot, destination, include_cache, root_url=root_url),
             self._export_package_finished,
             "Export failed",
@@ -2341,12 +2518,12 @@ class MainWindow(QMainWindow):
         if not path:
             documents = QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation) or data_dir()
             path, _ = QFileDialog.getOpenFileName(
-                self, "Import ODeR directory", documents, "ODeR directory package (*.oder)"
+                self, "Import ODeR library", documents, "ODeR library package (*.oder)"
             )
         if not path:
             return
         self._start_package_task(
-            "Validating directory package…",
+            "Validating library package…",
             lambda: inspect_package(path),
             lambda info: self._confirm_package_import(path, info),
             "Import validation failed",
@@ -2354,14 +2531,14 @@ class MainWindow(QMainWindow):
 
     def _compare_package_files(self):
         documents = QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation) or data_dir()
-        left, _ = QFileDialog.getOpenFileName(self, "Choose older ODeR package", documents, "ODeR directory package (*.oder)")
+        left, _ = QFileDialog.getOpenFileName(self, "Choose older ODeR package", documents, "ODeR library package (*.oder)")
         if not left:
             return
-        right, _ = QFileDialog.getOpenFileName(self, "Choose newer ODeR package", os.path.dirname(left), "ODeR directory package (*.oder)")
+        right, _ = QFileDialog.getOpenFileName(self, "Choose newer ODeR package", os.path.dirname(left), "ODeR library package (*.oder)")
         if not right:
             return
         self._start_package_task(
-            "Comparing directory packages…", lambda: compare_packages(left, right),
+            "Comparing library packages…", lambda: compare_packages(left, right),
             lambda result: PackageComparisonDialog(result, self).exec(), "Comparison failed",
         )
 
@@ -2392,12 +2569,12 @@ class MainWindow(QMainWindow):
                 running = self._crawl_status.get(target_id, {}).get("running")
             if running:
                 QMessageBox.warning(
-                    self, "Directory is updating",
-                    "Stop this directory's active crawl before replacing it from a package.",
+                    self, "Library is updating",
+                    "Stop this library's active crawl before replacing it from a package.",
                 )
                 return
         self._start_package_task(
-            "Importing directory package…",
+            "Importing library package…",
             lambda: import_directory(path, conflict_policy=policy, replace_profile_id=target_id),
             self._import_package_finished,
             "Import failed",
@@ -2412,7 +2589,7 @@ class MainWindow(QMainWindow):
         action = "replaced" if result.replaced else "imported"
         cache_text = (
             " The cached index is ready to browse." if result.cache_imported
-            else " Update the directory when you want to build its local index."
+            else " Update the library when you want to build its local index."
         )
         QMessageBox.information(
             self, "Import complete", f'"{profile["name"]}" was {action}.{cache_text}'
@@ -2434,7 +2611,7 @@ class MainWindow(QMainWindow):
                 return
             profile = create_profile(data["name"] or data["base_url"], data["base_url"])
             update_profile(profile["id"], settings=data["settings"])
-            applog.log(f"Site added: {profile['name']} ({profile['base_url']})")
+            applog.log(f"Library added: {profile['name']} ({profile['base_url']})")
             self._reload_tabs()
             self._open_site_tab(profile["id"])
 
@@ -2442,25 +2619,59 @@ class MainWindow(QMainWindow):
         profile = self._current_site_profile()
         if not profile:
             return
+        self._edit_profile_by_id(profile["id"])
+
+    def _edit_profile_by_id(self, profile_id):
+        profile = get_profile(profile_id)
+        if not profile:
+            QMessageBox.warning(self, "Library unavailable", "That library no longer exists.")
+            return
         dlg = ProfileDialog(self, profile=profile)
         if dlg.exec():
             data = dlg.result_data()
             update_profile(profile["id"], name=data["name"] or profile["name"],
                            base_url=data["base_url"], settings=data["settings"])
-            applog.log(f"Site edited: {data['name'] or profile['name']} ({data['base_url']})")
-            self._reload_tabs(select_key=f"site:{profile['id']}")
+            applog.log(f"Library edited: {data['name'] or profile['name']} ({data['base_url']})")
+            select_key = f"site:{profile['id']}" if self._current_key == f"site:{profile['id']}" else None
+            self._reload_tabs(select_key=select_key)
+
+    def _show_library_info(self, profile_id):
+        profile = get_profile(profile_id)
+        if not profile:
+            QMessageBox.warning(self, "Library unavailable", "That library no longer exists.")
+            return
+        counts = self.home._stats.get(profile_id)
+        if counts is None:
+            try:
+                counts = cache.count_summary(profile_id)
+            except Exception:
+                counts = {"entries": 0, "folders": 0, "files": 0}
+        items = max(0, int(counts.get("entries", 0)) - 1)
+        last_stats = profile.get("last_crawl_stats") or {}
+        source = "Hosted .oder package" if last_stats.get("update_mode") == "hosted" else "Local cached index"
+        last_updated = profile.get("last_crawled") or "Not updated yet"
+        QMessageBox.information(
+            self,
+            "Library information",
+            f"{profile['name']}\n\n"
+            f"Address: {profile.get('base_url', '')}\n"
+            f"Cached: {items:,} items · {int(counts.get('folders', 0)):,} folders · "
+            f"{int(counts.get('files', 0)):,} files\n"
+            f"Index source: {source}\n"
+            f"Last updated: {last_updated}",
+        )
 
     def _remove_profile(self):
         profile = self._current_site_profile()
         if not profile:
             return
         confirm = QMessageBox.question(
-            self, "Remove site",
+            self, "Remove library",
             f'Remove "{profile["name"]}"? Its cached listing will be removed from the app, but downloaded files are kept.'
         )
         if confirm == QMessageBox.Yes:
             key = f"site:{profile['id']}"
-            applog.log(f"Site removed: {profile['name']}")
+            applog.log(f"Library removed: {profile['name']}")
             delete_profile(profile["id"], delete_files=False)
             self._remove_page(key)
             profiles = load_profiles()
@@ -2493,11 +2704,11 @@ class MainWindow(QMainWindow):
         with self._crawl_status_lock:
             running = self._crawl_status.get(profile_id, {}).get("running")
         if running:
-            QMessageBox.warning(self, "Directory is updating", "Stop its active update before clearing the cached index.")
+            QMessageBox.warning(self, "Library is updating", "Stop its active update before clearing the cached index.")
             return
         answer = QMessageBox.question(
             self, "Clear cached index",
-            f"Clear the offline index for “{profile['name']}”? Downloaded files and the directory definition are kept.",
+            f"Clear the offline index for “{profile['name']}”? Downloaded files and the library definition are kept.",
         )
         if answer != QMessageBox.Yes:
             return
@@ -2568,7 +2779,7 @@ class MainWindow(QMainWindow):
             return
         with self._crawl_status_lock:
             if self._crawl_status.get(profile_id, {}).get("running"):
-                self.statusBar().showMessage("This directory is already updating · Open Activity for details")
+                self.statusBar().showMessage("This library is already updating · Open Activity for details")
                 return
             self._crawl_status[profile_id] = {"running": True, "phase": "preparing",
                                               "crawled": 0, "current": folder_url,
@@ -2606,14 +2817,14 @@ class MainWindow(QMainWindow):
         mode = mode if mode in {"resume", "incremental", "full"} else "resume"
         if mode == "full" and load_settings().get("confirm_full_updates", True):
             answer = QMessageBox.question(
-                self, "Rebuild entire site",
-                f"Re-scan every cached folder in “{profile['name']}”? This can take a long time on large directories.",
+                self, "Rebuild entire library",
+                f"Re-scan every cached folder in “{profile['name']}”? This can take a long time on large libraries.",
             )
             if answer != QMessageBox.Yes:
                 return
         with self._crawl_status_lock:
             if self._crawl_status.get(profile_id, {}).get("running"):
-                self.statusBar().showMessage("This directory is already updating · Open Activity for details")
+                self.statusBar().showMessage("This library is already updating · Open Activity for details")
                 return
             self._crawl_status[profile_id] = {"running": True, "phase": "preparing",
                                               "crawled": 0, "current": None, "error": None,
@@ -2663,6 +2874,7 @@ class MainWindow(QMainWindow):
     # ---------- periodic refresh ----------
 
     def _tick(self):
+        self._refresh_downloads_status_button()
         if self.downloads is not None:
             self.downloads.refresh()
         if self.logs is not None:
@@ -2701,7 +2913,7 @@ class MainWindow(QMainWindow):
                     tray = getattr(self, "tray_icon", None)
                     if tray is not None:
                         tray.showMessage(
-                            "Directory changed",
+                            "Library changed",
                             f"{profile['name']}: {changes.get('new_count', 0)} new, "
                             f"{changes.get('removed_count', 0)} removed, {changes.get('changed_count', 0)} changed.",
                             msecs=6000,

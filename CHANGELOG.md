@@ -4,6 +4,17 @@ Notable changes to ODeR are recorded here.
 
 ## Unreleased
 
+## 1.0.0-rc.1 — 2026-08-20
+
+- Marked the first ODeR 1.0 release candidate and added canonical prerelease-version validation to the release process.
+- Replaced the Home location rows with responsive square library tiles, including distinctive covers and an upper-right menu for settings, information, and `.oder` export.
+- Renamed tracked locations to libraries throughout the user-facing interface.
+- Removed visible `.oder` import buttons while retaining drag-and-drop, file-association, double-click, and forwarded single-instance opening.
+- Kept New tab and Favorites fixed in the sidebar and placed Activity, Changes, Storage, Logs, and Settings in a remembered section that expands downward.
+- Moved Downloads out of the sidebar and into a permanent bottom-right status-bar button with a live queued/active count.
+- Added UI regression coverage for the responsive library grid, overflow actions, import-button removal, sidebar collapse, and status-bar Downloads control.
+- Retained the hardened `.oder` package, structured-download, recovery, diagnostics, hosted-index, and verified-update foundations developed across the 0.x releases for final 1.0 testing.
+
 ## 0.21.0 — 2026-08-20
 
 - Added durable structured download destinations that recreate each directory's decoded folder hierarchy beneath its own site folder.

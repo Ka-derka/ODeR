@@ -10,7 +10,7 @@ This checklist creates the portable and installed editions from one source tree.
 
 ## Prepare the release
 
-1. Set the same canonical three-part version in `core/version.py`, `installer.iss`, `README.md` and `CHANGELOG.md`.
+1. Set the same canonical semantic version in `core/version.py`, `installer.iss`, `README.md` and `CHANGELOG.md`. Stable releases use three parts such as `1.0.0`; prereleases use a suffix such as `1.0.0-rc.1`.
 2. Run the tests:
 
    ```powershell
@@ -65,6 +65,8 @@ Unsigned first releases may trigger a Windows SmartScreen warning. Do not descri
 4. Add release notes from `CHANGELOG.md` and save a draft.
 5. Download and re-test the draft assets, then publish the release.
 
+For a release candidate, use the exact tag `v1.0.0-rc.1` and enable GitHub's **Set as a pre-release** option. Do not mark an RC as the latest stable release. Installed testers on an older ODeR version must select **Preview releases** in **Settings → Application updates** before checking; the Stable channel intentionally ignores prereleases.
+
 The in-app updater depends on the installer, portable ZIP, and checksum assets being present. GitHub currently normalizes the uploaded `ODeR Installer.exe` filename to `ODeR.Installer.exe`; the updater accepts both names. Keep `ODeR-Portable.zip` and `SHA256SUMS.txt` unchanged. Always upload the checksum file generated in the same build, and keep the installer `AppId` unchanged so Inno Setup treats future versions as upgrades.
 
-Always publish tags as `vMAJOR.MINOR.PATCH` (for example, `v0.21.0`), not `0.21` or `v0.21`. ODeR 0.19 and newer tolerate abbreviated tags, but older installed versions require all three numeric parts. A canonical 0.21.0 tag therefore allows users on 0.16.x through 0.20.x to update directly without installing intermediate releases.
+Always publish stable tags as `vMAJOR.MINOR.PATCH` (for example, `v1.0.0`) and prerelease tags as canonical SemVer (for example, `v1.0.0-rc.1`), not `0.21`, `v0.21`, or `v1.0.0-rc1`. ODeR 0.19 and newer tolerate abbreviated older tags, but older installed versions require all three numeric parts. Canonical tags allow users to update directly without installing intermediate releases.

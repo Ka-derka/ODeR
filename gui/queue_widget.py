@@ -45,7 +45,7 @@ class QueueWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Name", "Site", "Status", "Progress", "Speed / ETA"])
+        self.tree.setHeaderLabels(["Name", "Library", "Status", "Progress", "Speed / ETA"])
         self.tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
         for column, width in ((1, 190), (2, 145), (3, 250), (4, 150)):
             self.tree.setColumnWidth(column, width)

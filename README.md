@@ -2,20 +2,23 @@
 
 **Offline Directory Explorer & Retriever**
 
-ODeR is a PySide6 desktop application for indexing web directory listings, browsing the cached tree offline, tracking changes, and downloading selected files. Each directory keeps its own crawl and download settings, while the local SQLite index remains fast enough for large archives.
+ODeR is a PySide6 desktop application for indexing web directory listings, browsing the cached tree offline, tracking changes, and downloading selected files. Each tracked location appears as a library with its own crawl and download settings, while the local SQLite index remains fast enough for large archives.
 
-Current version: **0.21.0**
+Current version: **1.0.0-rc.1**
+
+This is the first 1.0 release candidate. It is intended for final compatibility, upgrade, packaging, and interface testing before the stable 1.0 release.
 
 ## Highlights
 
 - Browse cached directory trees without a network request.
 - Resume interrupted crawls, update stale folders, or rebuild an entire index.
-- Search locally with SQLite FTS5 plus site, type, size, file, and folder filters.
+- Search locally with SQLite FTS5 plus library, type, size, file, and folder filters.
 - Review snapshots of new, removed, and changed entries.
 - Save favorite folders and reusable searches.
-- Queue individual files or expandable download groups with speed and ETA while recreating the directory's original folder hierarchy on disk.
-- Import, export, validate, and compare versioned `.oder` directory packages.
-- Export either a complete directory or a selected subtree.
+- Queue individual files or expandable download groups with speed and ETA while recreating the library's original folder hierarchy on disk.
+- Import, export, validate, and compare versioned `.oder` library packages.
+- Manage libraries from responsive Home tiles with settings, information, and export actions in each tile's menu.
+- Export either a complete library or a selected subtree.
 - Manage, repair, compact, or clear cached indexes without touching downloads.
 - Choose Graphite, Midnight, Light, OLED Black, or a custom color palette.
 - Check stable or preview GitHub releases in-app and download verified updates.
@@ -76,7 +79,7 @@ Portable ODeR stores its writable `data` directory beside the executable. The in
 
 Installed builds can check GitHub for stable or preview releases from **Settings → Application updates**. ODeR checks at most once per day when automatic checks are enabled, and manual **Check now** and **View releases** actions are always available. Update checks send only the normal GitHub request and ODeR version user-agent; local directory URLs, searches, downloads, and usage data are not sent.
 
-ODeR scans recent published releases and selects the newest compatible download, so a malformed tag or incomplete release does not block valid updates. Short tags such as `0.18` are normalized to `0.18.0`, although canonical three-part tags remain required by the release checklist for compatibility with older clients.
+ODeR scans recent published releases and selects the newest compatible download, so a malformed tag or incomplete release does not block valid updates. Short tags such as `0.18` are normalized to `0.18.0`, although canonical semantic-version tags remain required by the release checklist for compatibility with older clients. Stable-channel users do not receive release candidates; testers can select the Preview channel for versions such as `1.0.0-rc.1`.
 
 The updater streams the installer into `%LOCALAPPDATA%\ODeR\updates` and verifies its SHA-256 digest before offering to launch it. GitHub's asset digest is preferred, with `SHA256SUMS.txt` as a fallback. Downloads are checked for expected size, available disk space, file type, archive structure, and trusted HTTPS origin. Failed partials are removed, while an already downloaded and verified update can be safely reused. When crawls or downloads are active, installation can wait until background work becomes idle.
 
@@ -93,10 +96,10 @@ Invalid SQLite directory caches are similarly preserved before an empty rebuilda
 Every new download receives a stable destination beneath the configured download directory:
 
 ```text
-<download directory>/<ODeR directory name>/<source folders>/<file name>
+<download directory>/<ODeR library name>/<source folders>/<file name>
 ```
 
-For example, `Season%201/English/episode.mkv` from a directory named `Archive` is saved as `Archive/Season 1/English/episode.mkv`. Folder batches and selected-file batches retain the same hierarchy. ODeR safely normalizes Windows-reserved names, control characters, traversal components, and overly long components; distinct sources that normalize to the same path receive numbered filenames instead of overwriting one another. Existing completed files are kept when that preference is enabled.
+For example, `Season%201/English/episode.mkv` from a library named `Archive` is saved as `Archive/Season 1/English/episode.mkv`. Folder batches and selected-file batches retain the same hierarchy. ODeR safely normalizes Windows-reserved names, control characters, traversal components, and overly long components; distinct sources that normalize to the same path receive numbered filenames instead of overwriting one another. Existing completed files are kept when that preference is enabled.
 
 Queue schema 2 pins the chosen relative destination so directory renames or future path-normalization improvements cannot move an active or completed queue item. Queues created by ODeR 0.20 are migrated while preserving their previous on-disk locations.
 
@@ -112,7 +115,7 @@ An `.oder` file is a ZIP container with format version metadata and SHA-256 chec
 
 ```text
 manifest.json       format/application versions, scope, timestamp, hashes and counts
-profile.json        directory name, URL and crawl/download settings
+profile.json        library name, URL and crawl/download settings
 cache.sqlite3       optional validated cached index
 ```
 

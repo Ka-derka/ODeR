@@ -41,7 +41,7 @@ class PackageTask(QObject):
 class ExportDirectoryDialog(QDialog):
     def __init__(self, profile, cache_stats, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Export ODeR directory")
+        self.setWindowTitle("Export ODeR library")
         self.setMinimumWidth(520)
         root = QVBoxLayout(self)
         root.setContentsMargins(20, 18, 20, 18)
@@ -58,9 +58,9 @@ class ExportDirectoryDialog(QDialog):
         definition_card = QFrame()
         definition_card.setObjectName("card")
         definition_layout = QVBoxLayout(definition_card)
-        self.definition = QRadioButton("Directory definition only")
+        self.definition = QRadioButton("Library definition only")
         definition_layout.addWidget(self.definition)
-        definition_text = QLabel("URL, name, crawl settings, and download settings. The imported directory must be indexed separately.")
+        definition_text = QLabel("URL, name, crawl settings, and download settings. The imported library must be indexed separately.")
         definition_text.setObjectName("mutedLabel")
         definition_text.setWordWrap(True)
         definition_layout.addWidget(definition_text)
@@ -77,7 +77,7 @@ class ExportDirectoryDialog(QDialog):
         size = int(cache_stats.get("size", 0))
         full_text = QLabel(
             f"{entries:,} cached entries · {folders:,} folders · {files:,} files · {format_bytes(size)} on disk. "
-            "The imported directory can be browsed immediately."
+            "The imported library can be browsed immediately."
         )
         full_text.setObjectName("mutedLabel")
         full_text.setWordWrap(True)
@@ -89,9 +89,9 @@ class ExportDirectoryDialog(QDialog):
         self.full.setChecked(has_cache)
         self.definition.setChecked(not has_cache)
         if not has_cache:
-            self.full.setToolTip("Update or progressively browse this directory before exporting its cached index.")
+            self.full.setToolTip("Update or progressively browse this library before exporting its cached index.")
 
-        note = QLabel("The .oder file contains directory metadata only; downloaded files are never included.")
+        note = QLabel("The .oder file contains library metadata only; downloaded files are never included.")
         note.setObjectName("mutedLabel")
         note.setWordWrap(True)
         root.addWidget(note)
@@ -110,14 +110,14 @@ class ExportDirectoryDialog(QDialog):
 class ImportDirectoryDialog(QDialog):
     def __init__(self, info, conflicts, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Import ODeR directory")
+        self.setWindowTitle("Import ODeR library")
         self.setMinimumWidth(560)
         self._conflicts = list(conflicts)
         root = QVBoxLayout(self)
         root.setContentsMargins(20, 18, 20, 18)
         root.setSpacing(12)
 
-        title = QLabel("Import ODeR directory")
+        title = QLabel("Import ODeR library")
         title.setObjectName("pageTitle")
         root.addWidget(title)
         filename = QLabel(os.path.basename(info.path))
@@ -134,14 +134,14 @@ class ImportDirectoryDialog(QDialog):
         url.setObjectName("cardMeta")
         url.setWordWrap(True)
         card_layout.addWidget(url)
-        scope_label = "Folder subtree" if info.scope == "subtree" else "Full directory"
+        scope_label = "Folder subtree" if info.scope == "subtree" else "Full library"
         if info.has_cache:
             contents = (
                 f"{scope_label} package · {info.cache_entries:,} entries · "
                 f"{info.cache_folders:,} folders · {info.cache_files:,} files · {format_bytes(info.cache_size)}"
             )
         else:
-            contents = "Directory definition only · no cached index"
+            contents = "Library definition only · no cached index"
         details = QLabel(f"{contents}\nExported {info.created_at} with ODeR {info.app_version}")
         details.setObjectName("cardMeta")
         details.setWordWrap(True)
@@ -150,20 +150,20 @@ class ImportDirectoryDialog(QDialog):
 
         self.conflict_choice = QComboBox()
         if self._conflicts:
-            warning = QLabel("A matching directory already exists. Importing as a copy is the safe default; replacing keeps downloaded files and replaces the cached index only when this package includes one.")
+            warning = QLabel("A matching library already exists. Importing as a copy is the safe default; replacing keeps downloaded files and replaces the cached index only when this package includes one.")
             warning.setObjectName("mutedLabel")
             warning.setWordWrap(True)
             root.addWidget(warning)
             self.conflict_choice.addItem("Import as a separate copy", ("copy", None))
             for existing in self._conflicts:
-                reason = existing.get("_conflict_reason", "matching directory")
+                reason = existing.get("_conflict_reason", "matching library")
                 self.conflict_choice.addItem(
-                    f"Replace {existing.get('name', 'existing directory')} ({reason})",
+                    f"Replace {existing.get('name', 'existing library')} ({reason})",
                     ("replace", existing.get("id")),
                 )
             root.addWidget(self.conflict_choice)
         else:
-            self.conflict_choice.addItem("Import directory", ("error", None))
+            self.conflict_choice.addItem("Import library", ("error", None))
             self.conflict_choice.hide()
 
         validation = QLabel("The package manifest, checksums, layout, and SQLite index have been validated.")

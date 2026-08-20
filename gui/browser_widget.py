@@ -146,7 +146,7 @@ class BrowserWidget(QWidget):
         menu = QMenu(self)
         menu.addAction("Resume unfinished update", lambda: self.resume_update_requested.emit())
         menu.addAction("Update stale folders", lambda: self.incremental_update_requested.emit())
-        menu.addAction("Rebuild entire site", lambda: self.full_update_requested.emit())
+        menu.addAction("Rebuild entire library", lambda: self.full_update_requested.emit())
         menu.addSeparator()
         menu.addAction("Export current folder…", self._export_current)
         self.full_update_btn.setMenu(menu)
@@ -156,7 +156,7 @@ class BrowserWidget(QWidget):
         self.download_selected_btn.clicked.connect(self._download_selected)
         self.download_selected_btn.setEnabled(False)
 
-        self.breadcrumb_label = QLabel("No site selected")
+        self.breadcrumb_label = QLabel("No library selected")
         self.breadcrumb_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.breadcrumb_label.setTextFormat(Qt.RichText)
         self.breadcrumb_label.linkActivated.connect(self._navigate)
@@ -337,7 +337,7 @@ class BrowserWidget(QWidget):
         self._visible_urls = []
         self._update_nav_state()
         if not self.profile:
-            self.breadcrumb_label.setText("No site selected")
+            self.breadcrumb_label.setText("No library selected")
             self.status_label.setText("")
             return
         if not self.current_url:

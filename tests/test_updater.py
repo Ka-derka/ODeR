@@ -82,6 +82,8 @@ class UpdaterTests(unittest.TestCase):
         self.assertTrue(updater.is_newer_version("0.16.0", "0.15.2"))
         self.assertTrue(updater.is_newer_version("0.16.0", "0.16.0-beta.1"))
         self.assertTrue(updater.is_newer_version("0.16.0-beta.10", "0.16.0-beta.2"))
+        self.assertTrue(updater.is_newer_version("1.0.0-rc.2", "1.0.0-rc.1"))
+        self.assertTrue(updater.is_newer_version("1.0.0", "1.0.0-rc.1"))
         self.assertFalse(updater.is_newer_version("0.16.0+build.2", "0.16.0+build.1"))
         self.assertFalse(updater.is_newer_version("v0.15.2", "0.15.2"))
         with self.assertRaises(updater.UpdateError):

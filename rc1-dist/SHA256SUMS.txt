@@ -1,0 +1,4 @@
+8bf3658a3744db66efe3b53d5b225badc264f16ca68d24039c5abef75d9d9d6a  ODeR Installer.exe
+9ea9e87e40fac1584f332f60143ebaddb7d980c865b1680ad9a91a925ebd4533  ODeR-1.0.0-rc.1-Source.zip
+a75876b7870e96a01f41d0b5722ddb6e49b385fb6b8440108db59f8a806128ea  ODeR-Portable.exe
+1a42bb4cad24b9d44dd64c757b2b1e4bf940fc72a4fe09c5ad6f0b39c79d0bbf  ODeR-Portable.zip
