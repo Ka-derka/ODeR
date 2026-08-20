@@ -1,4 +1,5 @@
 import os
+import base64
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -6,6 +7,12 @@ import zipfile
 
 from core import cache, profiles, library
 from core import oder_package
+from core.library_metadata import artwork_data_uri
+
+
+PNG_1X1 = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
 
 
 class OderPackageTests(unittest.TestCase):
@@ -80,6 +87,25 @@ class OderPackageTests(unittest.TestCase):
         self.assertTrue(imported.cache_imported)
         self.assertEqual(cache.count_nodes(imported.profile["id"]), 3)
         self.assertEqual(cache.get_base_url(imported.profile["id"]), self.profile["base_url"])
+
+    def test_metadata_and_artwork_round_trip_without_changing_format_version(self):
+        metadata = {
+            "description": "A curated software archive",
+            "creator": "Example curator",
+            "category": "Software",
+            "tags": ["shareware", "preservation"],
+            "artwork_data_uri": artwork_data_uri("image/png", PNG_1X1),
+        }
+        updated = profiles.update_profile(self.profile["id"], metadata=metadata)
+        target = os.path.join(self.temp.name, "metadata.oder")
+        exported = oder_package.export_directory(updated, target, include_cache=False)
+        inspected = oder_package.inspect_package(exported.path)
+        self.assertEqual(inspected.profile["schema_version"], 1)
+        self.assertEqual(inspected.profile["metadata"], metadata)
+
+        imported = oder_package.import_directory(exported.path, conflict_policy="copy")
+        self.assertEqual(imported.profile["metadata"], metadata)
+        self.assertEqual(profiles.get_profile(imported.profile["id"])["metadata"], metadata)
 
     def test_definition_replace_keeps_existing_cache(self):
         target = os.path.join(self.temp.name, "replace.oder")

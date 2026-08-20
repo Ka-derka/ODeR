@@ -2,7 +2,7 @@
 ; Build the standalone exe first with: pyinstaller build.spec
 
 #define MyAppName "ODeR"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.1.0-alpha.1"
 #define MyBuildExeName "ODeR-Portable.exe"
 #define MyAppExeName "ODeR.exe"
 

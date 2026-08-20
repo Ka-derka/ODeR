@@ -84,6 +84,7 @@ class UpdaterTests(unittest.TestCase):
         self.assertTrue(updater.is_newer_version("0.16.0-beta.10", "0.16.0-beta.2"))
         self.assertTrue(updater.is_newer_version("1.0.0-rc.2", "1.0.0-rc.1"))
         self.assertTrue(updater.is_newer_version("1.0.0", "1.0.0-rc.1"))
+        self.assertTrue(updater.is_newer_version("1.1.0-alpha.1", "1.0.0"))
         self.assertFalse(updater.is_newer_version("0.16.0+build.2", "0.16.0+build.1"))
         self.assertFalse(updater.is_newer_version("v0.15.2", "0.15.2"))
         with self.assertRaises(updater.UpdateError):
@@ -135,6 +136,11 @@ class UpdaterTests(unittest.TestCase):
         info = updater.check_for_update("0.16.0", channel="preview", portable=True, session=session)
         self.assertEqual(info.version, "0.17.0-beta.1")
         self.assertEqual(info.asset.name, updater.PORTABLE_ASSET_NAME)
+
+    def test_stable_channel_ignores_alpha_release(self):
+        alpha = release(version="1.1.0-alpha.1")
+        session = FakeSession({updater.RELEASES_URL: [FakeResponse(json_data=[alpha])]})
+        self.assertIsNone(updater.check_for_update("1.0.0", channel="stable", session=session))
 
     def test_checksum_file_is_used_when_asset_digest_is_missing(self):
         metadata = release()

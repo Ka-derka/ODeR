@@ -15,9 +15,10 @@ from PySide6.QtWidgets import (
     QProgressDialog, QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView
 )
 from PySide6.QtCore import Qt, QTimer, Signal, Slot, QThread, QStandardPaths, QUrl, QEvent
-from PySide6.QtGui import QShortcut, QKeySequence, QColor, QDesktopServices
+from PySide6.QtGui import QShortcut, QKeySequence, QColor, QDesktopServices, QPixmap
 
 from core.profiles import load_profiles, create_profile, update_profile, delete_profile, get_profile
+from core.library_metadata import decode_artwork_data_uri, normalize_library_metadata
 from core import cache, diagnostics, library, crawl_state, updater
 from core.crawl import crawl_profile, crawl_folder
 from core import downloader
@@ -172,6 +173,10 @@ QComboBox {
 QComboBox:hover { background: @BUTTON_HOVER@; }
 QComboBox::drop-down { border: none; width: 22px; }
 QComboBox QAbstractItemView { background: @PANEL@; color: @TEXT@; border: 1px solid @BUTTON_BORDER@; selection-background-color: @SELECTION@; selection-color: @TEXT@; }
+QTabWidget::pane { background: @CARD@; border: 1px solid @BUTTON_BORDER@; border-radius: 0 5px 5px 5px; }
+QTabBar::tab { background: @BUTTON@; color: @MUTED@; border: 1px solid @BUTTON_BORDER@; padding: 7px 12px; margin-right: 2px; }
+QTabBar::tab:selected { background: @CARD@; color: @TEXT@; border-bottom-color: @CARD@; }
+QTabBar::tab:hover:!selected { background: @BUTTON_HOVER@; color: @TEXT@; }
 QScrollArea { border: none; background: transparent; }
 QScrollArea > QWidget > QWidget { background: transparent; }
 QListWidget { background: @BACKGROUND@; border: none; outline: none; }
@@ -188,6 +193,7 @@ QFrame#libraryTile { background: @CARD@; border: 1px solid @BUTTON_BORDER@; bord
 QFrame#libraryTile:hover { border-color: @ACCENT@; }
 QLabel#libraryTitle { font-size: 15px; font-weight: 650; color: @TEXT@; }
 QLabel#libraryMeta { color: @MUTED@; font-size: 11px; }
+QLabel#libraryArtworkPreview { background: @INPUT@; color: @MUTED@; border: 1px solid @BUTTON_BORDER@; border-radius: 6px; }
 QToolButton#libraryMenuButton {
     background: rgba(12, 15, 22, 190); color: #FFFFFF; border: 1px solid rgba(255, 255, 255, 70);
     border-radius: 5px; padding: 0; min-width: 28px; max-width: 28px; min-height: 25px; max-height: 25px;
@@ -303,18 +309,37 @@ class LibraryTile(QFrame):
         layout.setContentsMargins(9, 9, 9, 10)
         layout.setSpacing(8)
 
-        cover = QFrame()
-        cover.setObjectName("libraryCover")
+        metadata = normalize_library_metadata(profile.get("metadata"))
+        artwork_pixmap = QPixmap()
+        artwork = metadata.get("artwork_data_uri")
+        if artwork:
+            try:
+                _mime_type, artwork_bytes = decode_artwork_data_uri(artwork)
+                artwork_pixmap.loadFromData(artwork_bytes)
+            except ValueError:
+                artwork_pixmap = QPixmap()
+
+        cover = QLabel()
+        cover.setObjectName("libraryCoverArtwork" if not artwork_pixmap.isNull() else "libraryCover")
         cover.setFixedHeight(124)
         digest = hashlib.sha256(
             f"{profile.get('id', '')}:{profile.get('name', '')}".encode("utf-8", "replace")
         ).digest()
         start, end = self._COVER_PALETTES[digest[0] % len(self._COVER_PALETTES)]
-        cover.setStyleSheet(
-            "QFrame#libraryCover {"
-            f"background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {start}, stop:1 {end});"
-            "border: none; border-radius: 7px; }"
-        )
+        if artwork_pixmap.isNull():
+            cover.setStyleSheet(
+                "QLabel#libraryCover {"
+                f"background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {start}, stop:1 {end});"
+                "border: none; border-radius: 7px; }"
+            )
+        else:
+            scaled = artwork_pixmap.scaled(200, 124, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+            left = max(0, (scaled.width() - 200) // 2)
+            top = max(0, (scaled.height() - 124) // 2)
+            cover.setPixmap(scaled.copy(left, top, 200, 124))
+            cover.setAlignment(Qt.AlignCenter)
+            cover.setStyleSheet("QLabel#libraryCoverArtwork { border: none; border-radius: 7px; }")
+        self.artwork_label = cover if not artwork_pixmap.isNull() else None
         cover_layout = QVBoxLayout(cover)
         cover_layout.setContentsMargins(10, 8, 8, 9)
         cover_layout.setSpacing(0)
@@ -345,14 +370,21 @@ class LibraryTile(QFrame):
         initial.setStyleSheet(
             "background: transparent; color: white; font-size: 42px; font-weight: 700;"
         )
+        initial.setVisible(artwork_pixmap.isNull())
         cover_layout.addWidget(initial)
         cover_layout.addStretch(1)
         host = str(profile.get("base_url") or "").split("://", 1)[-1].split("/", 1)[0]
-        host_label = QLabel(host or "Offline library")
+        host_label = QLabel(metadata.get("category") or host or "Offline library")
         host_label.setAlignment(Qt.AlignCenter)
-        host_label.setStyleSheet(
-            "background: transparent; color: rgba(255, 255, 255, 220); font-size: 10px;"
-        )
+        if artwork_pixmap.isNull():
+            host_label.setStyleSheet(
+                "background: transparent; color: rgba(255, 255, 255, 220); font-size: 10px;"
+            )
+        else:
+            host_label.setStyleSheet(
+                "background: rgba(0, 0, 0, 145); color: white; font-size: 10px; "
+                "padding: 2px 5px; border-radius: 3px;"
+            )
         host_label.setToolTip(profile.get("base_url", ""))
         cover_layout.addWidget(host_label)
         layout.addWidget(cover)
@@ -2610,7 +2642,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Missing URL", "Please enter a base URL.")
                 return
             profile = create_profile(data["name"] or data["base_url"], data["base_url"])
-            update_profile(profile["id"], settings=data["settings"])
+            update_profile(profile["id"], settings=data["settings"], metadata=data["metadata"])
             applog.log(f"Library added: {profile['name']} ({profile['base_url']})")
             self._reload_tabs()
             self._open_site_tab(profile["id"])
@@ -2630,7 +2662,8 @@ class MainWindow(QMainWindow):
         if dlg.exec():
             data = dlg.result_data()
             update_profile(profile["id"], name=data["name"] or profile["name"],
-                           base_url=data["base_url"], settings=data["settings"])
+                           base_url=data["base_url"], settings=data["settings"],
+                           metadata=data["metadata"])
             applog.log(f"Library edited: {data['name'] or profile['name']} ({data['base_url']})")
             select_key = f"site:{profile['id']}" if self._current_key == f"site:{profile['id']}" else None
             self._reload_tabs(select_key=select_key)
@@ -2650,16 +2683,42 @@ class MainWindow(QMainWindow):
         last_stats = profile.get("last_crawl_stats") or {}
         source = "Hosted .oder package" if last_stats.get("update_mode") == "hosted" else "Local cached index"
         last_updated = profile.get("last_crawled") or "Not updated yet"
-        QMessageBox.information(
-            self,
-            "Library information",
-            f"{profile['name']}\n\n"
-            f"Address: {profile.get('base_url', '')}\n"
+        metadata = normalize_library_metadata(profile.get("metadata"))
+        lines = []
+        if metadata.get("description"):
+            lines.extend((metadata["description"], ""))
+        if metadata.get("creator"):
+            lines.append(f"Creator / curator: {metadata['creator']}")
+        if metadata.get("category"):
+            lines.append(f"Category: {metadata['category']}")
+        if metadata.get("tags"):
+            lines.append(f"Tags: {', '.join(metadata['tags'])}")
+        if lines and lines[-1] != "":
+            lines.append("")
+        lines.extend((
+            f"Address: {profile.get('base_url', '')}",
             f"Cached: {items:,} items · {int(counts.get('folders', 0)):,} folders · "
-            f"{int(counts.get('files', 0)):,} files\n"
-            f"Index source: {source}\n"
+            f"{int(counts.get('files', 0)):,} files",
+            f"Index source: {source}",
             f"Last updated: {last_updated}",
-        )
+        ))
+        message = QMessageBox(self)
+        message.setWindowTitle("Library information")
+        message.setText(profile["name"])
+        message.setInformativeText("\n".join(lines))
+        artwork = metadata.get("artwork_data_uri")
+        if artwork:
+            try:
+                _mime_type, artwork_bytes = decode_artwork_data_uri(artwork)
+                pixmap = QPixmap()
+                if pixmap.loadFromData(artwork_bytes):
+                    message.setIconPixmap(
+                        pixmap.scaled(180, 120, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    )
+            except ValueError:
+                pass
+        message.setStandardButtons(QMessageBox.Close)
+        message.exec()
 
     def _remove_profile(self):
         profile = self._current_site_profile()

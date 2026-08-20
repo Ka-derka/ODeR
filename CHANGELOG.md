@@ -4,6 +4,15 @@ Notable changes to ODeR are recorded here.
 
 ## Unreleased
 
+## 1.1.0-alpha.1 — 2026-08-20
+
+- Added optional library artwork, descriptions, creator/curator credits, categories, and tags through a new Library details editor.
+- Displayed custom artwork on Home library tiles while retaining deterministic generated covers for libraries without artwork.
+- Expanded Library Information to show descriptive metadata and an artwork preview alongside cache and source details.
+- Embedded size-limited, validated PNG/JPEG/WebP artwork and metadata inside existing `.oder` profile JSON so 1.1 preserves it while ODeR 1.0 remains able to import the package and ignore the optional fields.
+- Added strict metadata normalization, duplicate-tag removal, length and count limits, 1 MiB artwork limits, and package comparison reporting for presentation changes.
+- Added themed Library details and Indexing & downloads tabs plus regression coverage for persistence, artwork processing, Home display, and `.oder` round-tripping.
+
 ## 1.0.0 — 2026-08-20
 
 - Promoted the tested RC1 code to the first stable ODeR release without introducing additional feature changes.

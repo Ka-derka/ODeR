@@ -4,9 +4,9 @@
 
 ODeR is a PySide6 desktop application for indexing web directory listings, browsing the cached tree offline, tracking changes, and downloading selected files. Each tracked location appears as a library with its own crawl and download settings, while the local SQLite index remains fast enough for large archives.
 
-Current version: **1.0.0**
+Current version: **1.1.0-alpha.1**
 
-ODeR 1.0 is the first stable release of the offline library browser, indexer, package manager, and structured downloader.
+ODeR 1.1 Alpha 1 is a Preview-channel build based on the stable 1.0 foundation. It begins the richer library-presentation work with optional artwork and descriptive metadata while retaining `.oder` format version 1 compatibility.
 
 ## Highlights
 
@@ -18,6 +18,7 @@ ODeR 1.0 is the first stable release of the offline library browser, indexer, pa
 - Queue individual files or expandable download groups with speed and ETA while recreating the library's original folder hierarchy on disk.
 - Import, export, validate, and compare versioned `.oder` library packages.
 - Manage libraries from responsive Home tiles with settings, information, and export actions in each tile's menu.
+- Give libraries portable artwork, descriptions, creator/curator credits, categories, and tags.
 - Export either a complete library or a selected subtree.
 - Manage, repair, compact, or clear cached indexes without touching downloads.
 - Choose Graphite, Midnight, Light, OLED Black, or a custom color palette.

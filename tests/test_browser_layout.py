@@ -7,6 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
     from PySide6.QtCore import QRect, Qt
+    from PySide6.QtGui import QColor, QImage
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QPushButton, QToolButton
     from gui.browser_widget import BrowserWidget
@@ -253,6 +254,36 @@ class BrowserLayoutTests(unittest.TestCase):
         self.assertNotIn("Add library", visible_buttons)
         self.assertNotIn("Settings", visible_buttons)
         widget.close()
+
+    def test_library_artwork_and_metadata_are_editable_and_visible_on_home(self):
+        image = QImage(32, 24, QImage.Format_RGB32)
+        image.fill(QColor("#336699"))
+        artwork = ProfileDialog._encoded_jpeg(image)
+        profile = {
+            "id": "art-library", "name": "Art Library",
+            "base_url": "https://example.test/",
+            "metadata": {
+                "description": "A curated collection",
+                "creator": "Curator",
+                "category": "Software",
+                "tags": ["shareware", "preservation"],
+                "artwork_data_uri": artwork,
+            },
+            "settings": {},
+        }
+        dialog = ProfileDialog(profile=profile)
+        result = dialog.result_data()
+        self.assertEqual(result["metadata"]["description"], "A curated collection")
+        self.assertEqual(result["metadata"]["creator"], "Curator")
+        self.assertEqual(result["metadata"]["tags"], ["shareware", "preservation"])
+        self.assertEqual(result["metadata"]["artwork_data_uri"], artwork)
+        dialog.close()
+
+        tile = LibraryTile(profile, "No cache yet")
+        self.assertIsNotNone(tile.artwork_label)
+        self.assertFalse(tile.artwork_label.pixmap().isNull())
+        self.assertEqual(tile.artwork_label.objectName(), "libraryCoverArtwork")
+        tile.close()
 
     def test_sidebar_utilities_collapse_and_downloads_live_in_status_bar(self):
         with (

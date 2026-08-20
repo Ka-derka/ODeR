@@ -65,13 +65,22 @@ Additional JSON properties may be added in a compatible ODeR release. Readers sh
   "source_profile_id": "optional-source-id",
   "name": "Example archive",
   "base_url": "https://example.com/files/",
-  "settings": {}
+  "settings": {},
+  "metadata": {
+    "description": "A curated collection of public-domain software.",
+    "creator": "Example curator",
+    "category": "Software",
+    "tags": ["shareware", "preservation"],
+    "artwork_data_uri": "data:image/jpeg;base64,..."
+  }
 }
 ```
 
 `base_url` must be an absolute HTTP or HTTPS URL and is normalized to a trailing slash. `source_profile_id` identifies the originating local profile when available and is used only to detect import conflicts. It is not used as the new local ID when importing as a copy.
 
 A full package may also contain `cache_state`, which carries nonessential crawl metadata such as the last crawl time and recent history. A subtree definition may contain `source_directory` provenance. Neither changes the package's authority: the validated base URL and cache contents remain decisive.
+
+ODeR 1.1 adds the optional `metadata` object without changing profile schema 1. Text lengths, tag counts, and embedded artwork are bounded; artwork must be a validated PNG, JPEG, or WebP image no larger than 1 MiB. Because version 1 readers ignore additional JSON properties, ODeR 1.0 can still open these packages and safely ignores presentation fields it does not understand.
 
 ## Cached index
 
@@ -87,7 +96,7 @@ Downloaded files, credentials, application-wide settings, favorites, and unrelat
 
 ## Compatibility and failure behavior
 
-ODeR 0.20 supports format version 1 and profile schema version 1. Unsupported future versions are rejected without importing or replacing data. A future incompatible layout or changed field meaning requires a new `format_version`; a changed profile payload requires a new `schema_version`.
+ODeR 0.20 and newer support format version 1 and profile schema version 1. Unsupported future versions are rejected without importing or replacing data. A future incompatible layout or changed field meaning requires a new `format_version`; a changed profile payload requires a new `schema_version`.
 
 Import is staged and validated before profiles or caches are changed. Replacing an existing directory restores the previous profile and cache if the operation fails. Conflicts by original profile ID or normalized base URL require an explicit choice to replace the matching directory or import a separate copy.
 

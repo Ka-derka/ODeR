@@ -4,6 +4,7 @@ import threading
 import uuid
 
 from core.paths import profiles_index_path, profile_dir, profile_cache_path
+from core.library_metadata import normalize_library_metadata
 from core.persistence import load_json, save_json
 from core.state_schema import load_document, save_document
 
@@ -33,6 +34,7 @@ def _normalize_profiles(values):
         if isinstance(value.get("settings"), dict):
             settings.update(value["settings"])
         profile["settings"] = settings
+        profile["metadata"] = normalize_library_metadata(value.get("metadata"))
         profile.setdefault("index_source", None)
         profile.setdefault("hosted_index", None)
         profile.setdefault("last_crawled", None)
@@ -80,6 +82,7 @@ def create_profile(name, base_url):
             "name": name.strip() or base_url,
             "base_url": base_url,
             "settings": dict(DEFAULT_SETTINGS),
+            "metadata": {},
             "index_source": None,
             "hosted_index": None,
             "last_crawled": None,
@@ -103,6 +106,9 @@ def update_profile(profile_id, **fields):
                 settings = changes.pop("settings", None)
                 if isinstance(settings, dict):
                     p["settings"].update(settings)
+                metadata = changes.pop("metadata", None)
+                if metadata is not None:
+                    p["metadata"] = normalize_library_metadata(metadata)
                 p.update(changes)
                 updated = p
                 break

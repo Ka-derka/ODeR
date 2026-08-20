@@ -27,6 +27,7 @@ from urllib.parse import unquote
 
 from core import cache
 from core.paths import data_dir, profile_cache_db_path, profile_dir
+from core.library_metadata import LibraryMetadataError, normalize_library_metadata
 from core.profiles import DEFAULT_SETTINGS, load_profiles, save_profiles
 from core.version import APP_NAME, APP_VERSION
 from core import library
@@ -141,6 +142,9 @@ def _profile_payload(profile: dict, include_cache: bool, root_url: str | None = 
         "base_url": export_base,
         "settings": settings,
     }
+    metadata = normalize_library_metadata(profile.get("metadata"))
+    if metadata:
+        payload["metadata"] = metadata
     if root_url:
         payload["source_directory"] = {
             "profile_id": str(profile.get("id") or ""),
@@ -174,6 +178,12 @@ def _validate_profile_payload(value) -> dict:
     settings = value.get("settings") or {}
     if not isinstance(settings, dict) or len(_json_bytes(settings)) > MAX_JSON_BYTES:
         raise PackageError("The package profile settings are invalid or too large.")
+    metadata = None
+    if "metadata" in value:
+        try:
+            metadata = normalize_library_metadata(value.get("metadata"), strict=True)
+        except LibraryMetadataError as exc:
+            raise PackageError(str(exc)) from exc
     state = value.get("cache_state")
     if state is not None:
         if not isinstance(state, dict):
@@ -198,6 +208,7 @@ def _validate_profile_payload(value) -> dict:
         "name": name,
         "base_url": base_url,
         "settings": _safe_json_copy(settings, {}),
+        "metadata": _safe_json_copy(metadata, None),
         "cache_state": _safe_json_copy(state, None),
     }
 
@@ -531,16 +542,25 @@ def _build_imported_profile(info: PackageInfo, profile_id: str, existing: dict |
     payload = info.profile
     settings = dict(DEFAULT_SETTINGS)
     settings.update(payload.get("settings") or {})
+    incoming_metadata = payload.get("metadata")
     if existing and not info.has_cache:
         result = dict(existing)
         result.update({"id": profile_id, "name": payload["name"], "base_url": payload["base_url"], "settings": settings})
+        if incoming_metadata is not None:
+            result["metadata"] = normalize_library_metadata(incoming_metadata)
         return result
     state = payload.get("cache_state") or {}
+    metadata = (
+        normalize_library_metadata(incoming_metadata)
+        if incoming_metadata is not None
+        else normalize_library_metadata((existing or {}).get("metadata"))
+    )
     return {
         "id": profile_id,
         "name": payload["name"],
         "base_url": payload["base_url"],
         "settings": settings,
+        "metadata": metadata,
         "index_source": state.get("index_source"),
         "hosted_index": None,
         "last_crawled": state.get("last_crawled"),
@@ -666,6 +686,8 @@ def compare_packages(left_path: str, right_path: str, detail_limit: int = 2000) 
         differences.append("Base URL")
     if (left.profile.get("settings") or {}) != (right.profile.get("settings") or {}):
         differences.append("Directory settings")
+    if (left.profile.get("metadata") or {}) != (right.profile.get("metadata") or {}):
+        differences.append("Library metadata or artwork")
     if left.package_type != right.package_type:
         differences.append("Package type")
     if not left.has_cache or not right.has_cache:

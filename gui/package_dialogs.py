@@ -60,7 +60,7 @@ class ExportDirectoryDialog(QDialog):
         definition_layout = QVBoxLayout(definition_card)
         self.definition = QRadioButton("Library definition only")
         definition_layout.addWidget(self.definition)
-        definition_text = QLabel("URL, name, crawl settings, and download settings. The imported library must be indexed separately.")
+        definition_text = QLabel("URL, name, artwork, descriptive metadata, crawl settings, and download settings. The imported library must be indexed separately.")
         definition_text.setObjectName("mutedLabel")
         definition_text.setWordWrap(True)
         definition_layout.addWidget(definition_text)
