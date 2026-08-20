@@ -15,7 +15,7 @@ class ReleaseMetadataTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertIsNone(CANONICAL_VERSION.fullmatch(value))
 
-    def test_repository_metadata_matches_rc_version_and_tag(self):
+    def test_repository_metadata_matches_current_version_and_tag(self):
         with patch.dict(
             os.environ,
             {"GITHUB_REF_TYPE": "tag", "GITHUB_REF_NAME": f"v{APP_VERSION}"},

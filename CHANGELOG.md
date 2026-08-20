@@ -4,6 +4,12 @@ Notable changes to ODeR are recorded here.
 
 ## Unreleased
 
+## 1.0.0 — 2026-08-20
+
+- Promoted the tested RC1 code to the first stable ODeR release without introducing additional feature changes.
+- Made `1.0.0` available to the Stable update channel while preserving correct upgrade ordering from `1.0.0-rc.1`.
+- Finalized the 1.0 release notes, compatibility documentation, Windows portable package, installer, source archive, and integrity checksums.
+
 ## 1.0.0-rc.1 — 2026-08-20
 
 - Marked the first ODeR 1.0 release candidate and added canonical prerelease-version validation to the release process.

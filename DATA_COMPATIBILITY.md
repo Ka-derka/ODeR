@@ -11,12 +11,12 @@ Settings, profiles, the download queue, favorites, package history, and per-dire
   "format": "oder-state",
   "kind": "settings",
   "schema_version": 1,
-  "written_by": "1.0.0-rc.1",
+  "written_by": "1.0.0",
   "data": {}
 }
 ```
 
-Each state kind has an independent integer schema. ODeR upgrades older schemas step by step and writes the migrated result atomically while retaining the previous file as `.bak`. State from pre-0.20 releases is treated as schema 0. ODeR 0.21 and the 1.0 release candidate upgrade the download queue to schema 2 by pinning each existing item's previous relative destination; the other state kinds remain at schema 1.
+Each state kind has an independent integer schema. ODeR upgrades older schemas step by step and writes the migrated result atomically while retaining the previous file as `.bak`. State from pre-0.20 releases is treated as schema 0. ODeR 0.21 and 1.0 upgrade the download queue to schema 2 by pinning each existing item's previous relative destination; the other state kinds remain at schema 1.
 
 If a file uses a newer schema, startup stops before the main window or background work can overwrite it. Installing a newer ODeR release is the recovery path. Syntax errors and invalid structures instead use the last-known-good backup; damaged files are preserved for diagnosis when possible.
 

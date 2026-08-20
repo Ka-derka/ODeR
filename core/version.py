@@ -1,4 +1,4 @@
 """Application version shared by the UI and package metadata."""
 
 APP_NAME = "ODeR"
-APP_VERSION = "1.0.0-rc.1"
+APP_VERSION = "1.0.0"
