@@ -81,6 +81,34 @@ class PersistenceAndDownloadTests(unittest.TestCase):
         self.assertEqual(stored["url"], "torrent://3138b358-6e67-4217-b70b-dd0fe7871ed8/7")
         self.assertEqual(stored["destination_rel_path"], "Curated Library/Folder/file.bin")
 
+    def test_t1_selected_priority_is_assigned_as_one_complete_vector(self):
+        class CopyingParams:
+            def __init__(self):
+                self._priorities = []
+
+            @property
+            def file_priorities(self):
+                return list(self._priorities)
+
+            @file_priorities.setter
+            def file_priorities(self, value):
+                self._priorities = list(value)
+
+        params = CopyingParams()
+        fake_lt = types.SimpleNamespace(add_torrent_params=lambda: params)
+        info = types.SimpleNamespace(num_files=lambda: 6)
+        result = downloader._torrent_add_params(fake_lt, info, self.temp.name, 4)
+        self.assertIs(result, params)
+        self.assertEqual(params.file_priorities, [0, 0, 0, 0, 4, 0])
+
+    def test_torrent_staging_lookup_preserves_exact_long_filename(self):
+        name = ("Long release name [1080p][x265][AAC] " * 5).strip() + ".mkv"
+        relative = f"Library/Season 5/{name}"
+        expected = os.path.join(self.temp.name, "Library", "Season 5", name)
+        self.assertEqual(downloader._torrent_payload_path(self.temp.name, relative), expected)
+        with self.assertRaises(ValueError):
+            downloader._torrent_payload_path(self.temp.name, "Library/../outside.bin")
+
     def test_download_destination_recreates_decoded_source_folders(self):
         root = os.path.join(self.temp.name, "downloads")
         with patch.object(downloader, "load_settings", return_value={"download_dir": root}):

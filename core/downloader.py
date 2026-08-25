@@ -479,6 +479,40 @@ def _torrent_staging_path(item):
     return staging
 
 
+def _torrent_payload_path(staging, relative):
+    """Resolve libtorrent's exact file path without renaming its components."""
+    text = str(relative or "").replace("\\", "/")
+    native = text.replace("/", os.sep)
+    drive, _tail = os.path.splitdrive(native)
+    parts = text.split("/")
+    if (
+            not text or drive or os.path.isabs(native)
+            or any(part in {"", ".", ".."} for part in parts)
+            or any("\x00" in part for part in parts)):
+        raise ValueError("The torrent contains an unsafe payload path.")
+    staging = os.path.abspath(staging)
+    candidate = os.path.abspath(os.path.join(staging, *parts))
+    try:
+        inside = os.path.normcase(os.path.commonpath((staging, candidate))) == os.path.normcase(staging)
+    except ValueError:
+        inside = False
+    if not inside:
+        raise ValueError("The torrent payload path escaped its staging folder.")
+    return candidate
+
+
+def _torrent_add_params(lt, info, staging, file_index):
+    params = lt.add_torrent_params()
+    params.ti = info
+    params.save_path = staging
+    # Boost.Python returns a copy when this vector property is read. Build the
+    # complete list first and assign it once, otherwise all files remain at 0.
+    priorities = [0] * info.num_files()
+    priorities[file_index] = 4
+    params.file_priorities = priorities
+    return params
+
+
 def _sha256_path(path):
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
@@ -516,6 +550,8 @@ def _download_torrent_one(item, _profile_settings, log):
         file_index = int(source["file_index"])
         if file_index < 0 or file_index >= info.num_files():
             raise ValueError("The selected T1 file index is outside the torrent.")
+        relative = str(info.files().file_path(file_index)).replace("\\", "/")
+        downloaded = _torrent_payload_path(staging, relative)
         session_settings = {
             "enable_dht": bool(settings.get("torrent_enable_dht", True)),
             "enable_lsd": bool(settings.get("torrent_enable_lsd", True)),
@@ -531,11 +567,7 @@ def _download_torrent_one(item, _profile_settings, log):
         if upload_limit:
             session_settings["upload_rate_limit"] = upload_limit * 1024
         session = lt.session(session_settings)
-        params = lt.add_torrent_params()
-        params.ti = info
-        params.save_path = staging
-        params.file_priorities = [0] * info.num_files()
-        params.file_priorities[file_index] = 4
+        params = _torrent_add_params(lt, info, staging, file_index)
         handle = session.add_torrent(params)
         expected_size = int(source.get("size") or info.files().file_size(file_index))
         expected_hash = str(source.get("sha256") or "").casefold()
@@ -567,16 +599,14 @@ def _download_torrent_one(item, _profile_settings, log):
                     speed_bps=speed, eta_seconds=eta,
                 )
                 last_update = now
-            if bool(status.is_seeding) or bool(status.is_finished):
+            if (bool(status.is_seeding) or bool(status.is_finished)) and done >= expected_size:
                 break
             for alert in session.pop_alerts():
                 if alert.__class__.__name__ in {"torrent_error_alert", "file_error_alert"}:
                     raise RuntimeError(alert.message())
             time.sleep(0.25)
 
-        relative = str(info.files().file_path(file_index)).replace("\\", "/")
-        downloaded = os.path.abspath(os.path.join(staging, *_safe_relative_path(relative, decode=False)))
-        if os.path.commonpath((staging, downloaded)) != staging or not os.path.isfile(downloaded):
+        if not os.path.isfile(downloaded):
             raise RuntimeError("The completed torrent file was not found in its safe staging folder.")
         actual_size = os.path.getsize(downloaded)
         if actual_size != expected_size or (expected_hash and _sha256_path(downloaded) != expected_hash):

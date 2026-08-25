@@ -12,6 +12,7 @@ Notable changes to ODeR are recorded here.
 - Added explicit torrent privacy and networking settings for DHT, local peer discovery, UPnP, NAT-PMP, peer limits, and transfer limits; completed jobs stop instead of silently continuing to seed.
 - Added Torrent labels and source selection to curated-library tabs while keeping bundled and HTTPS fallbacks available.
 - Fixed multi-file hybrid torrents being rejected when libtorrent inserted internal alignment files between catalog files.
+- Fixed selected torrent files remaining disabled because the Python priority vector was mutated through a copy, and preserved exact metainfo names when resolving completed staging files.
 
 ## 2026.0.2a — 2026-08-25
 

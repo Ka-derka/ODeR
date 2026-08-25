@@ -24,6 +24,8 @@ Creator automatically builds the metainfo, embeds and maps it as T1, calculates 
 
 Multi-file hybrid torrents correctly ignore libtorrent's internal alignment files while retaining the native indexes of every real file. This prevents larger folder imports from failing with an incomplete generated file map.
 
+Selected-file downloads now apply their libtorrent priority in one complete operation, wait for the requested bytes to finish, and preserve the exact metainfo filename while locating the staging result. This fixes jobs incorrectly completing at 0 B and then reporting that the file was missing.
+
 ## Notes for testers
 
 - This is a preview release; choose **Preview releases** in ODeR's update settings.

@@ -36,6 +36,7 @@ Use ordinary test files that you are allowed to redistribute. Keep a second BitT
 
 - [ ] Seed the generated `.torrent` from the original source folder in another client.
 - [ ] Download one nested file from ODeR and confirm only that file is selected by ODeR.
+- [ ] Confirm the job does not jump from 0 B directly to a missing-staging-file error, including with a long release filename.
 - [ ] Confirm the Downloads page reports progress, speed, ETA, and the library/folder destination.
 - [ ] Pause the job, close ODeR, reopen it, resume, and confirm partial data is reused.
 - [ ] Confirm the completed file lands under `<Downloads>/<library>/<folder>/<filename>`.
