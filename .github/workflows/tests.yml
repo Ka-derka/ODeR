@@ -152,7 +152,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Build application bundles and disk images
-        run: ./build_macos.sh
+        run: bash build_macos.sh
 
       - name: Verify bundle metadata
         run: |
