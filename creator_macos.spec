@@ -32,6 +32,7 @@ exe = EXE(
     console=False,
     argv_emulation=True,
     icon="icon.png",
+    target_arch="x86_64",
 )
 coll = COLLECT(
     exe,
@@ -51,6 +52,7 @@ app = BUNDLE(
         "CFBundleShortVersionString": numeric_version,
         "CFBundleVersion": numeric_version,
         "CFBundleGetInfoString": f"ODeR Creator {CREATOR_VERSION}",
+        "LSMinimumSystemVersion": "12.0",
         "NSHighResolutionCapable": True,
         "CFBundleDocumentTypes": [
             {

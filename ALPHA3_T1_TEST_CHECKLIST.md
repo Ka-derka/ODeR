@@ -60,4 +60,5 @@ Use ordinary test files that you are allowed to redistribute. Keep a second BitT
 - [ ] Install `ODeR Installer.exe` over Alpha 2 and confirm settings, libraries, downloads, and caches remain.
 - [ ] Install `ODeR Creator Installer.exe` and confirm `.odrproj` file association still opens Creator.
 - [ ] Confirm Windows file properties report `1.1.0-alpha.3` for ODeR and `2026.0.2a` for Creator.
-- [ ] On macOS, open both `.app` bundles/DMGs and repeat one Creator build plus one T1 library import.
+- [ ] On an Intel x64 macOS 12 Monterey test machine, open both `.app` bundles/DMGs and confirm neither is reported as unsupported.
+- [ ] On that Mac, repeat one Creator T1 build plus one T1 library import/download.

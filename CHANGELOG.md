@@ -4,6 +4,9 @@ Notable changes to ODeR are recorded here.
 
 ## Unreleased
 
+- Fixed macOS release artifacts being built for Apple silicon by the moving `macos-latest` runner; the release workflow now deliberately produces Intel x64 applications for macOS 12 Monterey or newer.
+- Pinned Monterey-compatible Mac Qt and libtorrent wheels and added bundle-wide architecture/deployment-target verification before DMGs can be uploaded.
+
 ## 1.1.0-alpha.3 — 2026-08-25
 
 - Implemented T1 torrent sources inside the stable `.odrlib` v1 extension model; U1 and T1 may be declared together without renaming the package format.

@@ -5,7 +5,7 @@ This checklist creates supported installer/disk-image editions from one source t
 ## Prerequisites
 
 - 64-bit Windows with Python 3.12 and Inno Setup 6 for Windows installers
-- macOS with Python 3.12 and the built-in `hdiutil` for `.app` bundles and DMGs
+- Intel x64 macOS with Python 3.10 and the built-in `hdiutil` for Monterey-compatible `.app` bundles and DMGs
 
 ## Prepare the release
 
@@ -38,7 +38,7 @@ The script searches `PATH` plus the standard system-wide and per-user Inno Setup
    bash build_macos.sh
    ```
 
-The macOS script builds `ODeR.app` and `ODeR Creator.app`, places each in a compressed DMG, and generates checksums. Build Mac artifacts on macOS; a Windows host cannot produce a valid native `.app` bundle.
+The macOS script builds Intel x64 `ODeR.app` and `ODeR Creator.app` bundles, verifies that every native component supports macOS 12 Monterey, places each in a compressed DMG, and generates checksums. It uses the pinned compatibility dependencies in `requirements-macos-intel.txt`. Build Mac artifacts on Intel macOS; a Windows host cannot produce a valid native `.app` bundle. GitHub Actions uses the explicit `macos-15-intel` runner so `macos-latest` cannot silently switch the release to Apple silicon.
 
 ## Release assets
 
@@ -63,13 +63,14 @@ Test on a clean Windows user account or Windows Sandbox:
 5. Install `ODeR Creator Installer.exe` and confirm its shortcuts, build flow, U1 output, and `.odrproj` association work.
 6. Compare the SHA-256 hashes with `SHA256SUMS.txt`.
 
-On a clean Mac account:
+On a clean Intel Mac running macOS 12 Monterey (and, if available, a newer macOS version):
 
 1. Mount both DMGs, copy each `.app` into Applications, and launch it.
 2. Confirm ODeR creates `~/Library/Application Support/ODeR` and opens `.oder`/`.odrlib` documents.
 3. Confirm Creator opens `.odrproj`, validates a project, and produces a readable `.odrlib` with U1 when a feed is configured.
 4. Confirm ODeR selects, verifies, downloads, and opens `ODeR.dmg` from a preview-channel update.
 5. Compare both DMG hashes with `SHA256SUMS.txt`.
+6. In **System Information → Software → Applications**, confirm both applications report **64-Bit (Intel)** and do not show an unsupported-application warning.
 
 Unsigned first releases may trigger a Windows SmartScreen warning. Do not describe the build as code-signed unless both release executables were actually signed and verified.
 

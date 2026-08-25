@@ -39,7 +39,7 @@ ODeR 1.1.0 Alpha 3 can install and browse Creator-built `.odrlib` v1 catalogs, u
 - Requests 2.31 or newer
 - libtorrent 2.1.1
 
-Supported packaged builds are the Windows installer and native macOS `.app`/DMG. Linux and other PySide6 desktop platforms can run from source.
+Supported packaged builds are the Windows installer and an Intel x64 macOS `.app`/DMG for macOS 12 Monterey or newer. The Mac compatibility build uses Python 3.10, PySide6 6.9.3, and libtorrent 2.0.9 because their Intel wheels retain Monterey support. Linux and other PySide6 desktop platforms can run from source.
 
 ## Run from source
 
@@ -82,13 +82,13 @@ The installed application stores writable data in `%LOCALAPPDATA%\ODeR`, not in 
 
 ## Build for macOS
 
-Run this on macOS with Python 3.12:
+Run this on an Intel Mac with x86_64 Python 3.10:
 
 ```bash
 bash build_macos.sh
 ```
 
-The script creates `ODeR.app` and `ODeR Creator.app`, wraps each in a distributable DMG, and writes matching SHA-256 checksums to `release-dist/`. ODeR stores user data in `~/Library/Application Support/ODeR`. The bundles associate `.oder`/`.odrlib` with ODeR and `.odrproj` with Creator. These first builds are unsigned; Gatekeeper may require the user to approve opening them until a Developer ID signing and notarization workflow is added.
+The script creates Intel x64 `ODeR.app` and `ODeR Creator.app` bundles compatible with macOS 12 Monterey or newer, checks the architecture and deployment target of every bundled native library, wraps each application in a distributable DMG, and writes matching SHA-256 checksums to `release-dist/`. It intentionally uses `requirements-macos-intel.txt` instead of Homebrew's current macOS-only dependency bottles. ODeR stores user data in `~/Library/Application Support/ODeR`. The bundles associate `.oder`/`.odrlib` with ODeR and `.odrproj` with Creator. These first builds are unsigned; Gatekeeper may require the user to approve opening them until a Developer ID signing and notarization workflow is added.
 
 ## Application updates
 

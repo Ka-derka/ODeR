@@ -142,14 +142,24 @@ jobs:
           retention-days: 7
 
   macos-build:
-    name: macOS applications
+    name: macOS Intel applications (Monterey+)
     needs: test
-    runs-on: macos-latest
+    runs-on: macos-15-intel
     timeout-minutes: 45
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Set up Intel Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          architecture: x64
+          cache: pip
+          cache-dependency-path: requirements-macos-intel.txt
 
       - name: Build application bundles and disk images
         run: bash build_macos.sh
@@ -160,6 +170,9 @@ jobs:
           test -x "dist/ODeR Creator.app/Contents/MacOS/ODeR Creator"
           plutil -lint "dist/ODeR.app/Contents/Info.plist"
           plutil -lint "dist/ODeR Creator.app/Contents/Info.plist"
+          python tools/verify_macos_bundle.py \
+            "dist/ODeR.app" "dist/ODeR Creator.app" \
+            --architecture x86_64 --maximum-deployment-target 12.0
 
       - name: Launch macOS bundles
         env:
@@ -171,7 +184,7 @@ jobs:
       - name: Upload macOS release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ODeR-macOS-${{ github.sha }}
+          name: ODeR-macOS-Intel-Monterey-${{ github.sha }}
           path: |
             release-dist/ODeR.dmg
             release-dist/ODeR Creator.dmg

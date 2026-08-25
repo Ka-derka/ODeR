@@ -1,0 +1,9 @@
+# The Intel release is intentionally built with Python 3.10 and wheels whose
+# deployment tags still support macOS 12 Monterey. Keep this separate from the
+# current Windows/Linux runtime so a newer dependency cannot silently raise the
+# minimum macOS version of a published DMG.
+PySide6==6.9.3
+requests>=2.31,<3
+libtorrent==2.0.9
+pyinstaller==6.16.0
+pillow>=10,<13
