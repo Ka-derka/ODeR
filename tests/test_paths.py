@@ -34,13 +34,15 @@ class ApplicationPathTests(unittest.TestCase):
                 self.assertTrue(paths.is_portable())
                 self.assertEqual(paths.data_dir(), os.path.join(temporary_dir, "data"))
 
-    def test_installed_executable_uses_local_application_data(self):
+    def test_windows_installed_executable_uses_local_application_data(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
             executable = os.path.join(temporary_dir, "Program Files", "ODeR", "ODeR.exe")
             local_app_data = os.path.join(temporary_dir, "LocalAppData")
             with mock.patch.object(sys, "frozen", True, create=True), mock.patch.object(
                 sys, "executable", executable
-            ), mock.patch.dict(os.environ, {"LOCALAPPDATA": local_app_data}):
+            ), mock.patch.object(sys, "platform", "win32"), mock.patch.dict(
+                os.environ, {"LOCALAPPDATA": local_app_data}
+            ):
                 self.assertFalse(paths.is_portable())
                 self.assertEqual(paths.data_dir(), os.path.join(local_app_data, "ODeR"))
 
