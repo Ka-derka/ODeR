@@ -38,6 +38,20 @@ class ApplicationPathTests(unittest.TestCase):
                 self.assertFalse(paths.is_portable())
                 self.assertEqual(paths.data_dir(), os.path.join(local_app_data, "ODeR"))
 
+    def test_macos_application_uses_application_support(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            executable = os.path.join(temporary_dir, "ODeR.app", "Contents", "MacOS", "ODeR")
+            with mock.patch.object(sys, "frozen", True, create=True), mock.patch.object(
+                sys, "executable", executable
+            ), mock.patch.object(sys, "platform", "darwin"), mock.patch(
+                "core.paths.os.path.expanduser", return_value=temporary_dir
+            ):
+                self.assertFalse(paths.is_portable())
+                self.assertEqual(
+                    paths.data_dir(),
+                    os.path.join(temporary_dir, "Library", "Application Support", "ODeR"),
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

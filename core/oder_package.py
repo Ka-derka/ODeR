@@ -58,6 +58,7 @@ class PackageInfo:
     path: str
     package_type: str
     created_at: str
+    app_name: str
     app_version: str
     name: str
     base_url: str
@@ -359,8 +360,9 @@ def inspect_package(path: str, cache_destination: str | None = None) -> PackageI
         application = manifest.get("application") or {}
         if not isinstance(application, dict):
             raise PackageError("The package application metadata is invalid.")
+        app_name = str(application.get("name") or "").strip()
         app_version = str(application.get("version") or "unknown")
-        if len(app_version) > 80:
+        if not app_name or len(app_name) > 200 or len(app_version) > 80:
             raise PackageError("The package application version is invalid.")
         cache_counts = {"entries": 0, "folders": 0, "files": 0}
         cache_size = 0
@@ -400,6 +402,7 @@ def inspect_package(path: str, cache_destination: str | None = None) -> PackageI
             path=path,
             package_type=package_type,
             created_at=created_at,
+            app_name=app_name,
             app_version=app_version,
             name=profile["name"],
             base_url=profile["base_url"],
@@ -483,6 +486,7 @@ def export_directory(profile: dict, destination: str, include_cache: bool = Fals
         path=destination,
         package_type="full" if include_cache else "definition",
         created_at=created_at,
+        app_name=APP_NAME,
         app_version=APP_VERSION,
         name=payload["name"],
         base_url=payload["base_url"],
@@ -545,7 +549,13 @@ def _build_imported_profile(info: PackageInfo, profile_id: str, existing: dict |
     incoming_metadata = payload.get("metadata")
     if existing and not info.has_cache:
         result = dict(existing)
-        result.update({"id": profile_id, "name": payload["name"], "base_url": payload["base_url"], "settings": settings})
+        result.update({
+            "id": profile_id,
+            "name": payload["name"],
+            "base_url": payload["base_url"],
+            "settings": settings,
+            "created_with": {"name": info.app_name, "version": info.app_version},
+        })
         if incoming_metadata is not None:
             result["metadata"] = normalize_library_metadata(incoming_metadata)
         return result
@@ -561,6 +571,7 @@ def _build_imported_profile(info: PackageInfo, profile_id: str, existing: dict |
         "base_url": payload["base_url"],
         "settings": settings,
         "metadata": metadata,
+        "created_with": {"name": info.app_name, "version": info.app_version},
         "index_source": state.get("index_source"),
         "hosted_index": None,
         "last_crawled": state.get("last_crawled"),

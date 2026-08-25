@@ -23,11 +23,15 @@ class LibraryMetadataTests(unittest.TestCase):
             "description": "  A useful archive  ",
             "creator": "Curator",
             "category": "Software",
+            "version": "2.4.1",
             "tags": ["Shareware", "shareware", " Preservation "],
+            "links": ["https://example.test/catalog", "https://mirror.example.test/catalog"],
             "artwork_data_uri": artwork,
         }, strict=True)
         self.assertEqual(result["description"], "A useful archive")
         self.assertEqual(result["tags"], ["Shareware", "Preservation"])
+        self.assertEqual(result["version"], "2.4.1")
+        self.assertEqual(len(result["links"]), 2)
         mime_type, decoded = decode_artwork_data_uri(result["artwork_data_uri"])
         self.assertEqual(mime_type, "image/png")
         self.assertEqual(decoded, PNG_1X1)
@@ -60,6 +64,7 @@ class LibraryMetadataTests(unittest.TestCase):
 
             self.assertEqual(loaded["metadata"]["description"], "Preserved software")
             self.assertEqual(loaded["metadata"]["tags"], ["DOS", "Shareware"])
+            self.assertEqual(loaded["created_with"]["name"], "ODeR")
 
 
 if __name__ == "__main__":

@@ -18,7 +18,8 @@ from gui.single_instance import SingleInstance
 
 def main():
     app = QApplication(sys.argv)
-    app.setQuitOnLastWindowClosed(False)  # closing the window minimizes to tray, doesn't quit
+    smoke_test = "--smoke-test" in sys.argv[1:]
+    app.setQuitOnLastWindowClosed(smoke_test is True)
     app.setApplicationName("ODeR")
     app.setApplicationVersion(APP_VERSION)
 
@@ -44,7 +45,8 @@ def main():
         library.favorites()
         library.recent_packages(1)
         for profile in startup_profiles:
-            crawl_state.load(profile.get("id"))
+            if profile.get("kind", "directory") == "directory":
+                crawl_state.load(profile.get("id"))
         window = MainWindow()
     except StateSchemaError as exc:
         QMessageBox.critical(
@@ -57,9 +59,17 @@ def main():
     instance.message_received.connect(window.handle_external_message)
     for pending_message in instance.set_ready():
         window.handle_external_message(pending_message)
-    setup_tray(app, window)
-    window.show()
-    window.handle_external_arguments(sys.argv[1:], os.getcwd(), delay_ms=250)
+    if smoke_test:
+        def finish_smoke_test():
+            downloader.stop_background_worker()
+            window.close()
+            app.quit()
+
+        QTimer.singleShot(250, finish_smoke_test)
+    else:
+        setup_tray(app, window)
+        window.show()
+        window.handle_external_arguments(sys.argv[1:], os.getcwd(), delay_ms=250)
 
     exit_code = app.exec()
     instance.close()

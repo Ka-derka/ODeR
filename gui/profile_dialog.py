@@ -24,6 +24,9 @@ class ProfileDialog(QDialog):
 
         settings = (profile or {}).get("settings", {})
         metadata = normalize_library_metadata((profile or {}).get("metadata"))
+        self._preserved_metadata = {
+            key: metadata[key] for key in ("version", "links") if key in metadata
+        }
         self._artwork_data_uri = metadata.get("artwork_data_uri", "")
 
         self.name_edit = QLineEdit((profile or {}).get("name", ""))
@@ -216,13 +219,15 @@ class ProfileDialog(QDialog):
         )
 
     def result_data(self):
-        metadata = normalize_library_metadata({
+        metadata_values = dict(self._preserved_metadata)
+        metadata_values.update({
             "description": self.description_edit.toPlainText(),
             "creator": self.creator_edit.text(),
             "category": self.category_edit.text(),
             "tags": self.tags_edit.text().split(","),
             "artwork_data_uri": self._artwork_data_uri,
         })
+        metadata = normalize_library_metadata(metadata_values)
         return {
             "name": self.name_edit.text().strip(),
             "base_url": self.url_edit.text().strip(),

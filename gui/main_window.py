@@ -19,7 +19,7 @@ from PySide6.QtGui import QShortcut, QKeySequence, QColor, QDesktopServices, QPi
 
 from core.profiles import load_profiles, create_profile, update_profile, delete_profile, get_profile
 from core.library_metadata import decode_artwork_data_uri, normalize_library_metadata
-from core import cache, diagnostics, library, crawl_state, updater
+from core import cache, diagnostics, library, crawl_state, updater, odrlib_store
 from core.crawl import crawl_profile, crawl_folder
 from core import downloader
 from core import applog
@@ -32,10 +32,13 @@ from core.version import APP_VERSION
 
 from gui.profile_dialog import ProfileDialog
 from gui.browser_widget import BrowserWidget
+from gui.odrlib_browser import OdrLibBrowserWidget
 from gui.queue_widget import QueueWidget
 from gui.logs_page import LogsPage
 from gui.package_dialogs import (
-    ExportDirectoryDialog, ImportDirectoryDialog, PackageComparisonDialog, PackageTask, format_bytes,
+    ExportDirectoryDialog, ImportDirectoryDialog, ImportOdrLibDialog, LibraryInformationDialog,
+    PackageComparisonDialog, PackageTask, format_bytes, format_library_datetime,
+    format_number, library_version,
 )
 from gui.update_dialogs import UpdateCheckTask, UpdateDialog, UpdateDownloadTask
 
@@ -194,6 +197,9 @@ QFrame#libraryTile:hover { border-color: @ACCENT@; }
 QLabel#libraryTitle { font-size: 15px; font-weight: 650; color: @TEXT@; }
 QLabel#libraryMeta { color: @MUTED@; font-size: 11px; }
 QLabel#libraryArtworkPreview { background: @INPUT@; color: @MUTED@; border: 1px solid @BUTTON_BORDER@; border-radius: 6px; }
+QLabel#librarySummaryArtwork { background: @INPUT@; border: 1px solid @BUTTON_BORDER@; border-radius: 7px; }
+QLabel#libraryDetailKey { color: @MUTED@; font-weight: 600; }
+QLabel#libraryDetailValue { color: @TEXT@; }
 QToolButton#libraryMenuButton {
     background: rgba(12, 15, 22, 190); color: #FFFFFF; border: 1px solid rgba(255, 255, 255, 70);
     border-radius: 5px; padding: 0; min-width: 28px; max-width: 28px; min-height: 25px; max-height: 25px;
@@ -268,6 +274,14 @@ class CacheStatsTask(QThread):
                 break
             profile_id = profile["id"]
             try:
+                if profile.get("kind") == "odrlib":
+                    counts = (profile.get("odrlib") or {}).get("counts") or {}
+                    self.stats_ready.emit(profile_id, {
+                        "entries": int(counts.get("items") or 0) + 1,
+                        "folders": int(counts.get("folders") or 0),
+                        "files": int(counts.get("artifacts") or 0),
+                    })
+                    continue
                 if self._initialize_caches:
                     cache.migrate_json_if_needed(profile_id, profile.get("base_url", ""))
                     cache.initialize(profile_id, profile.get("base_url", ""))
@@ -318,6 +332,10 @@ class LibraryTile(QFrame):
                 artwork_pixmap.loadFromData(artwork_bytes)
             except ValueError:
                 artwork_pixmap = QPixmap()
+        if artwork_pixmap.isNull():
+            artwork_path = str(profile.get("odrlib_artwork_path") or "")
+            if artwork_path and os.path.isfile(artwork_path):
+                artwork_pixmap.load(artwork_path)
 
         cover = QLabel()
         cover.setObjectName("libraryCoverArtwork" if not artwork_pixmap.isNull() else "libraryCover")
@@ -353,10 +371,11 @@ class LibraryTile(QFrame):
         menu_button.setToolTip(f"Actions for {profile['name']}")
         menu_button.setPopupMode(QToolButton.InstantPopup)
         menu = QMenu(menu_button)
-        settings_action = menu.addAction("Settings")
+        curated = profile.get("kind") == "odrlib"
+        settings_action = menu.addAction("Check for updates" if curated else "Settings")
         info_action = menu.addAction("Information")
         menu.addSeparator()
-        export_action = menu.addAction("Export .oder…")
+        export_action = menu.addAction("Save .odrlib copy…" if curated else "Export .oder…")
         settings_action.triggered.connect(lambda: self.edit_requested.emit(self.profile_id))
         info_action.triggered.connect(lambda: self.info_requested.emit(self.profile_id))
         export_action.triggered.connect(lambda: self.export_requested.emit(self.profile_id))
@@ -374,7 +393,9 @@ class LibraryTile(QFrame):
         cover_layout.addWidget(initial)
         cover_layout.addStretch(1)
         host = str(profile.get("base_url") or "").split("://", 1)[-1].split("/", 1)[0]
-        host_label = QLabel(metadata.get("category") or host or "Offline library")
+        host_label = QLabel(
+            metadata.get("category") or ("Curated library" if curated else host) or "Offline library"
+        )
         host_label.setAlignment(Qt.AlignCenter)
         if artwork_pixmap.isNull():
             host_label.setStyleSheet(
@@ -463,7 +484,7 @@ class HomePage(QWidget):
         section.setObjectName("sectionLabel")
         section_row.addWidget(section)
         section_row.addStretch(1)
-        drop_hint = QLabel("Drop an .oder file anywhere to add a library")
+        drop_hint = QLabel("Drop an .oder or .odrlib file anywhere to add a library")
         drop_hint.setObjectName("mutedLabel")
         section_row.addWidget(drop_hint)
         self.layout.addLayout(section_row)
@@ -497,18 +518,18 @@ class HomePage(QWidget):
 
     @staticmethod
     def _meta_text(profile, counts):
-        last_crawled = str(profile.get("last_crawled") or "Not updated").replace("T", " ")[:16]
+        last_crawled = format_library_datetime(profile.get("last_crawled"))
+        version = library_version(profile)
+        version_and_date = f"v{version} · {last_crawled}" if version else last_crawled
         if counts is None:
-            return f"Loading index statistics…\n{last_crawled}"
+            return f"Loading index statistics…\n{version_and_date}"
         total_items = max(0, int(counts.get("entries", 0)) - 1)
         folders = int(counts.get("folders", 0))
         files = int(counts.get("files", 0))
-        last_stats = profile.get("last_crawl_stats") or {}
-        if total_items > 0 and last_stats.get("update_mode") == "hosted":
-            status = "Hosted .oder ✓"
-        else:
-            status = "Cached ✓" if total_items > 0 else "No cache yet"
-        return f"{total_items:,} items · {folders:,} folders · {files:,} files\n{status} · {last_crawled}"
+        return (
+            f"{format_number(total_items)} items · {format_number(folders)} folders · "
+            f"{format_number(files)} files\n{version_and_date}"
+        )
 
     def update_profile_stats(self, profile_id, counts, profile=None):
         if counts is not None:
@@ -533,7 +554,7 @@ class HomePage(QWidget):
         self._stats = {profile_id: stats for profile_id, stats in self._stats.items()
                        if profile_id in live_ids}
         if not profiles:
-            empty = QLabel("No libraries yet. Add one, or drop an .oder package into ODeR.")
+            empty = QLabel("No libraries yet. Add one, or drop an .oder or .odrlib package into ODeR.")
             empty.setObjectName("mutedLabel")
             self.cards_grid.addWidget(empty, 0, 0)
             return
@@ -630,6 +651,8 @@ class SearchPage(QWidget):
         self.site_filter.clear()
         self.site_filter.addItem("All libraries", None)
         for profile in load_profiles():
+            if profile.get("kind") == "odrlib":
+                continue
             self.site_filter.addItem(profile["name"], profile["id"])
         index = self.site_filter.findData(selected)
         self.site_filter.setCurrentIndex(index if index >= 0 else 0)
@@ -651,7 +674,7 @@ class SearchPage(QWidget):
             self.summary.setText("Type a file or folder name in the sidebar search box.")
             return
         self.title.setText(f"Search results for “{query}”")
-        profiles = load_profiles()
+        profiles = [profile for profile in load_profiles() if profile.get("kind") != "odrlib"]
         profile_id = self.site_filter.currentData()
         if profile_id:
             profiles = [profile for profile in profiles if profile["id"] == profile_id]
@@ -849,7 +872,12 @@ class SettingsPage(QWidget):
         self.page_size=QSpinBox(); self.page_size.setRange(50,5000); self.page_size.setSingleStep(50); self.page_size.setValue(int(self._settings.get('browser_page_size',500))); bf.addRow('Entries per browser page',self.page_size); form.addWidget(behavior)
 
         updates=CollapsibleSection("Application updates", "GitHub release checks and update preferences", True, layout_type="form"); uf=updates.body_layout
-        runtime_mode = "Development" if not getattr(sys, "frozen", False) else ("Portable" if is_portable() else "Installed")
+        if not getattr(sys, "frozen", False):
+            runtime_mode = "Development"
+        elif sys.platform == "darwin":
+            runtime_mode = "macOS"
+        else:
+            runtime_mode = "Legacy portable" if is_portable() else "Installed"
         version_info=QLabel(f"ODeR {APP_VERSION} · {runtime_mode} edition")
         version_info.setObjectName('mutedLabel'); uf.addRow('Current version',version_info)
         self.auto_updates=QCheckBox('Automatically check for updates once per day'); self.auto_updates.setChecked(bool(self._settings.get('automatic_update_checks',True))); uf.addRow(self.auto_updates)
@@ -1263,7 +1291,7 @@ class StoragePage(QWidget):
         return format_bytes(value)
 
     def refresh(self):
-        profiles = load_profiles()
+        profiles = [profile for profile in load_profiles() if profile.get("kind") != "odrlib"]
         self.table.setRowCount(len(profiles))
         for row, profile in enumerate(profiles):
             try:
@@ -1339,6 +1367,8 @@ class ChangesPage(QWidget):
         self.profile.blockSignals(True)
         self.profile.clear()
         for profile in load_profiles():
+            if profile.get("kind") == "odrlib":
+                continue
             self.profile.addItem(profile["name"], profile["id"])
         index = self.profile.findData(selected)
         self.profile.setCurrentIndex(index if index >= 0 else 0)
@@ -1624,6 +1654,8 @@ class MainWindow(QMainWindow):
     def _runtime_update_mode(self):
         if not getattr(sys, "frozen", False):
             return "source"
+        if sys.platform == "darwin":
+            return "macos"
         return "portable" if is_portable() else "installed"
 
     @Slot(object)
@@ -1642,13 +1674,14 @@ class MainWindow(QMainWindow):
             candidate = str(argument)
             if not os.path.isabs(candidate):
                 candidate = os.path.abspath(os.path.join(cwd, candidate))
-            if candidate.casefold().endswith(".oder") and os.path.isfile(candidate):
+            if candidate.casefold().endswith((".oder", ".odrlib")) and os.path.isfile(candidate):
                 package_path = candidate
                 break
         if package_path:
+            importer = self._import_odrlib_package if package_path.casefold().endswith(".odrlib") else self._import_profile_package
             QTimer.singleShot(
                 max(0, int(delay_ms)),
-                lambda path=package_path: self._import_profile_package(path),
+                lambda path=package_path, action=importer: action(path),
             )
 
     def _settings_changed(self):
@@ -1682,7 +1715,7 @@ class MainWindow(QMainWindow):
         if manual:
             self.statusBar().showMessage("Checking GitHub for updates…")
         save_settings({"last_update_attempt_at": updater.checked_timestamp(), "last_update_error": None})
-        task = UpdateCheckTask(APP_VERSION, channel, mode == "portable", self)
+        task = UpdateCheckTask(APP_VERSION, channel, mode, self)
         self._update_check_task = task
         task.update_found.connect(lambda info, m=manual: self._update_found(info, m))
         task.no_update.connect(lambda m=manual: self._no_update_found(m))
@@ -1844,6 +1877,22 @@ class MainWindow(QMainWindow):
                 except OSError as exc:
                     QMessageBox.warning(self, "Could not open folder", str(exc))
             self.statusBar().showMessage(f"Portable update downloaded: {path}")
+        elif self._runtime_update_mode() == "macos":
+            box = QMessageBox(self)
+            box.setWindowTitle("macOS update downloaded")
+            box.setIcon(QMessageBox.Information)
+            box.setText(f"ODeR {info.version} was downloaded and verified.")
+            box.setInformativeText(
+                "Open the disk image, close ODeR, then drag the new ODeR application "
+                "into Applications to replace the current copy."
+            )
+            open_image = box.addButton("Open disk image", QMessageBox.AcceptRole)
+            box.addButton("Later", QMessageBox.RejectRole)
+            box.exec()
+            if box.clickedButton() is open_image:
+                if not QDesktopServices.openUrl(QUrl.fromLocalFile(path)):
+                    QMessageBox.warning(self, "Could not open disk image", "Open the downloaded DMG from Finder instead.")
+            self.statusBar().showMessage(f"macOS update downloaded: {path}")
         else:
             self._request_installer_launch(path, info.version)
 
@@ -2006,8 +2055,10 @@ class MainWindow(QMainWindow):
             return
         menu = QMenu(self)
         if key.startswith("site:"):
-            edit = menu.addAction("Library settings")
-            export_site = menu.addAction("Export .oder…")
+            profile = get_profile(key.split(":", 1)[1])
+            curated = bool(profile and profile.get("kind") == "odrlib")
+            edit = menu.addAction("Check for updates" if curated else "Library settings")
+            export_site = menu.addAction("Save .odrlib copy…" if curated else "Export .oder…")
             remove_site = menu.addAction("Remove library")
             menu.addSeparator()
         else:
@@ -2211,6 +2262,19 @@ class MainWindow(QMainWindow):
             return
         key = f"site:{profile_id}"
         if key not in self._pages:
+            if profile.get("kind") == "odrlib":
+                browser = OdrLibBrowserWidget()
+                browser.set_profile(profile)
+                browser.download_requested.connect(
+                    lambda request, pid=profile_id: self._download_odrlib_source(pid, request)
+                )
+                browser.information_requested.connect(lambda pid=profile_id: self._show_library_info(pid))
+                browser.update_requested.connect(lambda pid=profile_id: self._check_odrlib_update(pid))
+                self._add_page(key, profile["name"], "", browser, closable=True)
+                self._rebuild_tab_bar()
+                self._select_key(key)
+                self.statusBar().showMessage(f"Opened {profile['name']}")
+                return
             browser = BrowserWidget()
             browser.set_profile(profile)
             browser.navigate_requested.connect(lambda _unused=None, pid=profile_id: self._start_crawl_for(pid, "resume"))
@@ -2377,7 +2441,7 @@ class MainWindow(QMainWindow):
 
     def _focus_page_search(self):
         widget = self._pages.get(self._current_key)
-        if isinstance(widget, BrowserWidget):
+        if isinstance(widget, (BrowserWidget, OdrLibBrowserWidget)):
             widget.focus_search()
         else:
             self._focus_global_search()
@@ -2495,6 +2559,9 @@ class MainWindow(QMainWindow):
         if not profile:
             QMessageBox.warning(self, "Library unavailable", "That library no longer exists.")
             return
+        if profile.get("kind") == "odrlib":
+            self._save_odrlib_copy(profile)
+            return
         available = cache.database_exists(profile_id) and cache.count_crawled_dirs(profile_id) > 0
         scoped = cache.subtree_counts(profile_id, root_url) if available and root_url else {}
         all_entries = cache.count_nodes(profile_id) if available else 0
@@ -2544,6 +2611,24 @@ class MainWindow(QMainWindow):
         kind = "with its cached index" if info.has_cache else "as a definition"
         QMessageBox.information(self, "Export complete", f'"{info.name}" was exported {kind}.\n\n{info.path}')
 
+    def _save_odrlib_copy(self, profile):
+        documents = QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation) or data_dir()
+        safe_name = "".join(ch for ch in profile["name"] if ch not in '<>:"/\\|?*').strip() or "library"
+        destination, _selected = QFileDialog.getSaveFileName(
+            self, "Save ODeR Library copy", os.path.join(documents, safe_name + ".odrlib"),
+            "ODeR curated libraries (*.odrlib)",
+        )
+        if not destination:
+            return
+        self._start_package_task(
+            "Validating and copying curated library…",
+            lambda: odrlib_store.save_library_copy(profile, destination),
+            lambda path: QMessageBox.information(
+                self, "Library copy saved", f"The validated .odrlib package was saved.\n\n{path}"
+            ),
+            "Library copy failed",
+        )
+
     def _import_profile_package(self, path=None):
         if isinstance(path, bool):
             path = None
@@ -2576,17 +2661,23 @@ class MainWindow(QMainWindow):
 
     def dragEnterEvent(self, event):
         urls = event.mimeData().urls() if event.mimeData().hasUrls() else []
-        if any(url.isLocalFile() and url.toLocalFile().lower().endswith(".oder") for url in urls):
+        if any(
+            url.isLocalFile() and url.toLocalFile().lower().endswith((".oder", ".odrlib"))
+            for url in urls
+        ):
             event.acceptProposedAction()
         else:
             super().dragEnterEvent(event)
 
     def dropEvent(self, event):
         paths = [url.toLocalFile() for url in event.mimeData().urls()
-                 if url.isLocalFile() and url.toLocalFile().lower().endswith(".oder")]
+                 if url.isLocalFile() and url.toLocalFile().lower().endswith((".oder", ".odrlib"))]
         if paths:
             event.acceptProposedAction()
-            self._import_profile_package(paths[0])
+            if paths[0].lower().endswith(".odrlib"):
+                self._import_odrlib_package(paths[0])
+            else:
+                self._import_profile_package(paths[0])
         else:
             super().dropEvent(event)
 
@@ -2627,6 +2718,144 @@ class MainWindow(QMainWindow):
             self, "Import complete", f'"{profile["name"]}" was {action}.{cache_text}'
         )
 
+    def _import_odrlib_package(self, path):
+        if not path:
+            return
+        self._start_package_task(
+            "Validating curated library and all included files…",
+            lambda: odrlib_store.inspect_for_import(path),
+            self._confirm_odrlib_import,
+            "Curated library validation failed",
+        )
+
+    def _confirm_odrlib_import(self, preview):
+        dialog = ImportOdrLibDialog(preview, self)
+        if not dialog.exec():
+            return
+        policy, target_id = dialog.selected_policy()
+        self._start_package_task(
+            "Installing curated library…",
+            lambda: odrlib_store.import_library(
+                preview.package.path,
+                conflict_policy=policy,
+                replace_profile_id=target_id,
+            ),
+            self._odrlib_import_finished,
+            "Curated library import failed",
+        )
+
+    def _odrlib_import_finished(self, result):
+        profile = result.profile
+        self._reload_tabs()
+        self._open_site_tab(profile["id"])
+        action = "updated" if result.replaced else "imported"
+        applog.log(
+            f"curated library {action}: {profile['name']} revision {result.package.revision}"
+        )
+        QMessageBox.information(
+            self,
+            "Curated library ready",
+            f'"{profile["name"]}" was {action} and is ready to browse offline.\n\n'
+            f"{format_number(result.package.item_count)} files · "
+            f"{format_number(result.package.collection_count)} folders",
+        )
+
+    def _download_odrlib_source(self, profile_id, request):
+        profile = get_profile(profile_id)
+        if not profile or profile.get("kind") != "odrlib":
+            QMessageBox.warning(self, "Library unavailable", "That curated library is no longer installed.")
+            return
+        item = request.get("item") or {}
+        artifact = request.get("artifact") or {}
+        source = request.get("source") or {}
+        filename = (
+            artifact.get("filename") or os.path.basename(source.get("path") or "")
+            or artifact.get("name") or item.get("title") or "download"
+        )
+        folder = request.get("folder") or ""
+        if source.get("type") == "https":
+            downloader.enqueue(profile_id, profile["name"], source.get("url"), filename, folder)
+            self._show_special("downloads")
+            self.statusBar().showMessage(f"Queued {filename}", 7000)
+            return
+        if source.get("type") != "embedded":
+            QMessageBox.warning(self, "Source unavailable", "This download source is not supported.")
+            return
+        destination = downloader.destination_preview(profile["name"], folder, filename)
+        if os.path.isfile(destination) and load_settings().get("skip_existing_downloads", True):
+            QMessageBox.information(
+                self, "File already downloaded", f"The existing file was kept.\n\n{destination}"
+            )
+            return
+        self._start_package_task(
+            f"Extracting and verifying {filename}…",
+            lambda: odrlib_store.extract_embedded(profile, source, destination),
+            self._odrlib_embedded_finished,
+            "Bundled file could not be extracted",
+        )
+
+    def _odrlib_embedded_finished(self, result):
+        self.statusBar().showMessage(f"Downloaded {os.path.basename(result['path'])}", 8000)
+        QMessageBox.information(
+            self,
+            "Bundled file downloaded",
+            f"The offline copy passed its SHA-256 check and was saved to:\n\n{result['path']}",
+        )
+
+    def _check_odrlib_update(self, profile_id):
+        profile = get_profile(profile_id)
+        if not profile or profile.get("kind") != "odrlib":
+            return
+        if not (profile.get("odrlib") or {}).get("update_feed_url"):
+            QMessageBox.information(
+                self,
+                "Online updates unavailable",
+                "This library package does not include an online update-feed URL.\n\n"
+                "Its curator can enable updates in ODeR Creator under Library → "
+                "Publishing and updates, then publish both the generated feed and the "
+                "new .odrlib package at their configured HTTPS addresses.",
+            )
+            return
+        self._start_package_task(
+            f"Checking {profile['name']} for updates…",
+            lambda: odrlib_store.check_for_update(profile),
+            lambda feed, pid=profile_id: self._odrlib_update_checked(pid, feed),
+            "Library update check failed",
+        )
+
+    def _odrlib_update_checked(self, profile_id, feed):
+        profile = get_profile(profile_id)
+        if not profile:
+            return
+        if feed is None:
+            QMessageBox.information(self, "Library is current", "The installed library is already up to date.")
+            return
+        notes = f"\n\n{feed.release_notes}" if feed.release_notes else ""
+        answer = QMessageBox.question(
+            self,
+            "Curated library update available",
+            f"Update {profile['name']} to {feed.version or f'revision {feed.revision}'}?\n"
+            f"Download size: {format_bytes(feed.size)}{notes}",
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self._start_package_task(
+            f"Downloading and validating {profile['name']}…",
+            lambda: odrlib_store.download_update(profile, feed),
+            self._odrlib_update_finished,
+            "Library update failed",
+        )
+
+    def _odrlib_update_finished(self, result):
+        profile = result.profile
+        self._reload_tabs(select_key=f"site:{profile['id']}")
+        QMessageBox.information(
+            self,
+            "Curated library updated",
+            f'"{profile["name"]}" is now at revision {result.package.revision} '
+            f"({result.package.version or 'unversioned'}).",
+        )
+
     # ---------- profiles ----------
 
     def _current_site_profile(self):
@@ -2658,6 +2887,9 @@ class MainWindow(QMainWindow):
         if not profile:
             QMessageBox.warning(self, "Library unavailable", "That library no longer exists.")
             return
+        if profile.get("kind") == "odrlib":
+            self._check_odrlib_update(profile_id)
+            return
         dlg = ProfileDialog(self, profile=profile)
         if dlg.exec():
             data = dlg.result_data()
@@ -2675,50 +2907,24 @@ class MainWindow(QMainWindow):
             return
         counts = self.home._stats.get(profile_id)
         if counts is None:
-            try:
-                counts = cache.count_summary(profile_id)
-            except Exception:
-                counts = {"entries": 0, "folders": 0, "files": 0}
-        items = max(0, int(counts.get("entries", 0)) - 1)
+            if profile.get("kind") == "odrlib":
+                catalog = (profile.get("odrlib") or {}).get("counts") or {}
+                counts = {
+                    "entries": int(catalog.get("items") or 0) + 1,
+                    "folders": int(catalog.get("folders") or 0),
+                    "files": int(catalog.get("artifacts") or 0),
+                }
+            else:
+                try:
+                    counts = cache.count_summary(profile_id)
+                except Exception:
+                    counts = {"entries": 0, "folders": 0, "files": 0}
         last_stats = profile.get("last_crawl_stats") or {}
-        source = "Hosted .oder package" if last_stats.get("update_mode") == "hosted" else "Local cached index"
-        last_updated = profile.get("last_crawled") or "Not updated yet"
-        metadata = normalize_library_metadata(profile.get("metadata"))
-        lines = []
-        if metadata.get("description"):
-            lines.extend((metadata["description"], ""))
-        if metadata.get("creator"):
-            lines.append(f"Creator / curator: {metadata['creator']}")
-        if metadata.get("category"):
-            lines.append(f"Category: {metadata['category']}")
-        if metadata.get("tags"):
-            lines.append(f"Tags: {', '.join(metadata['tags'])}")
-        if lines and lines[-1] != "":
-            lines.append("")
-        lines.extend((
-            f"Address: {profile.get('base_url', '')}",
-            f"Cached: {items:,} items · {int(counts.get('folders', 0)):,} folders · "
-            f"{int(counts.get('files', 0)):,} files",
-            f"Index source: {source}",
-            f"Last updated: {last_updated}",
-        ))
-        message = QMessageBox(self)
-        message.setWindowTitle("Library information")
-        message.setText(profile["name"])
-        message.setInformativeText("\n".join(lines))
-        artwork = metadata.get("artwork_data_uri")
-        if artwork:
-            try:
-                _mime_type, artwork_bytes = decode_artwork_data_uri(artwork)
-                pixmap = QPixmap()
-                if pixmap.loadFromData(artwork_bytes):
-                    message.setIconPixmap(
-                        pixmap.scaled(180, 120, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                    )
-            except ValueError:
-                pass
-        message.setStandardButtons(QMessageBox.Close)
-        message.exec()
+        if profile.get("kind") == "odrlib":
+            source = "Curated .odrlib package"
+        else:
+            source = "Hosted .oder package" if last_stats.get("update_mode") == "hosted" else "Locally crawled index"
+        LibraryInformationDialog(profile, counts, source, self).exec()
 
     def _remove_profile(self):
         profile = self._current_site_profile()
@@ -2726,12 +2932,14 @@ class MainWindow(QMainWindow):
             return
         confirm = QMessageBox.question(
             self, "Remove library",
-            f'Remove "{profile["name"]}"? Its cached listing will be removed from the app, but downloaded files are kept.'
+            f'Remove "{profile["name"]}"? Its '
+            f'{"installed package" if profile.get("kind") == "odrlib" else "cached listing"} '
+            "will be removed from the app, but downloaded files are kept."
         )
         if confirm == QMessageBox.Yes:
             key = f"site:{profile['id']}"
             applog.log(f"Library removed: {profile['name']}")
-            delete_profile(profile["id"], delete_files=False)
+            delete_profile(profile["id"], delete_files=profile.get("kind") == "odrlib")
             self._remove_page(key)
             profiles = load_profiles()
             self.home.refresh(profiles)
@@ -2873,6 +3081,9 @@ class MainWindow(QMainWindow):
         profile = get_profile(profile_id)
         if not profile:
             return
+        if profile.get("kind") == "odrlib":
+            self._check_odrlib_update(profile_id)
+            return
         mode = mode if mode in {"resume", "incremental", "full"} else "resume"
         if mode == "full" and load_settings().get("confirm_full_updates", True):
             answer = QMessageBox.question(
@@ -2911,7 +3122,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Updating {profile['name']}…")
 
     def _resume_startup_crawls(self):
-        for profile, _state in crawl_state.resumable(load_profiles()):
+        profiles = [profile for profile in load_profiles() if profile.get("kind") != "odrlib"]
+        for profile, _state in crawl_state.resumable(profiles):
             self._start_crawl_for(profile["id"], "resume")
 
     def _stop_crawl_for(self, profile_id):
@@ -2925,7 +3137,7 @@ class MainWindow(QMainWindow):
     def _refresh_activity(self):
         if self.activity is None:
             return
-        profiles = load_profiles()
+        profiles = [profile for profile in load_profiles() if profile.get("kind") != "odrlib"]
         with self._crawl_status_lock:
             statuses = {k: dict(v) for k, v in self._crawl_status.items()}
         self.activity.refresh(profiles, statuses)
@@ -2998,6 +3210,10 @@ class MainWindow(QMainWindow):
         if isinstance(widget, BrowserWidget):
             if widget.profile and widget.current_url:
                 self._start_folder_crawl_for(widget.profile["id"], widget.current_url, False)
+        elif isinstance(widget, OdrLibBrowserWidget) and widget.profile:
+            profile = get_profile(widget.profile["id"])
+            if profile:
+                widget.set_profile(profile)
         elif self._current_key == "downloads" and self.downloads is not None:
             self.downloads.refresh()
         elif self._current_key == "search" and self.search_page is not None:
@@ -3011,6 +3227,8 @@ class MainWindow(QMainWindow):
         widget = self._pages.get(self._current_key)
         if isinstance(widget, BrowserWidget) and widget.profile:
             self._start_crawl_for(widget.profile["id"], "full")
+        elif isinstance(widget, OdrLibBrowserWidget) and widget.profile:
+            self._check_odrlib_update(widget.profile["id"])
 
     def _go_back(self):
         widget = self._pages.get(self._current_key)

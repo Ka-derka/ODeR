@@ -7,6 +7,7 @@ from core.paths import profiles_index_path, profile_dir, profile_cache_path
 from core.library_metadata import normalize_library_metadata
 from core.persistence import load_json, save_json
 from core.state_schema import load_document, save_document
+from core.version import APP_NAME, APP_VERSION
 
 _lock = threading.RLock()
 
@@ -30,11 +31,19 @@ def _normalize_profiles(values):
         if not isinstance(value, dict) or not value.get("id") or not value.get("base_url"):
             continue
         profile = dict(value)
+        profile["kind"] = "odrlib" if value.get("kind") == "odrlib" else "directory"
         settings = dict(DEFAULT_SETTINGS)
         if isinstance(value.get("settings"), dict):
             settings.update(value["settings"])
         profile["settings"] = settings
         profile["metadata"] = normalize_library_metadata(value.get("metadata"))
+        created_with = value.get("created_with")
+        if isinstance(created_with, dict):
+            name = str(created_with.get("name") or "").strip()[:200]
+            version = str(created_with.get("version") or "").strip()[:100]
+            profile["created_with"] = {"name": name, "version": version} if name else None
+        else:
+            profile["created_with"] = None
         profile.setdefault("index_source", None)
         profile.setdefault("hosted_index", None)
         profile.setdefault("last_crawled", None)
@@ -79,10 +88,12 @@ def create_profile(name, base_url):
         profiles = _load_profiles_unlocked()
         profile = {
             "id": uuid.uuid4().hex[:12],
+            "kind": "directory",
             "name": name.strip() or base_url,
             "base_url": base_url,
             "settings": dict(DEFAULT_SETTINGS),
             "metadata": {},
+            "created_with": {"name": APP_NAME, "version": APP_VERSION},
             "index_source": None,
             "hosted_index": None,
             "last_crawled": None,
@@ -93,6 +104,25 @@ def create_profile(name, base_url):
         profiles.append(profile)
         _save_profiles_unlocked(profiles)
     profile_dir(profile["id"])  # ensure folder exists
+    return profile
+
+
+def create_imported_profile(value):
+    """Persist a fully described non-directory library profile atomically."""
+    candidate = dict(value or {})
+    candidate.setdefault("id", uuid.uuid4().hex[:12])
+    normalized = _normalize_profiles([candidate])
+    if not normalized:
+        raise ValueError("The imported library profile is incomplete.")
+    profile = normalized[0]
+    with _lock:
+        profiles = _load_profiles_unlocked()
+        existing_ids = {item["id"] for item in profiles}
+        if profile["id"] in existing_ids:
+            raise ValueError("The imported library profile ID already exists.")
+        profiles.append(profile)
+        _save_profiles_unlocked(profiles)
+    profile_dir(profile["id"])
     return profile
 
 

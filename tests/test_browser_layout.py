@@ -1,20 +1,24 @@
 import os
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtCore import QRect, Qt
+    from PySide6.QtCore import QPoint, QRect, Qt
     from PySide6.QtGui import QColor, QImage
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QPushButton, QToolButton
+    from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QToolButton
     from gui.browser_widget import BrowserWidget
     from gui.queue_widget import QueueWidget
     from gui.logs_page import LogsPage
     from gui.main_window import ActivityPage, HomePage, LibraryTile, MainWindow, SettingsPage
     from gui.profile_dialog import ProfileDialog
+    from gui.package_dialogs import (
+        ImportDirectoryDialog, LibraryInformationDialog, LibrarySummaryWidget,
+    )
     PYSIDE_AVAILABLE = True
 except ModuleNotFoundError:
     PYSIDE_AVAILABLE = False
@@ -284,6 +288,93 @@ class BrowserLayoutTests(unittest.TestCase):
         self.assertFalse(tile.artwork_label.pixmap().isNull())
         self.assertEqual(tile.artwork_label.objectName(), "libraryCoverArtwork")
         tile.close()
+
+    def test_import_and_information_summaries_use_artwork_and_requested_fields(self):
+        profile = {
+            "id": "summary-library",
+            "name": "Archive",
+            "base_url": "https://example.test/files/",
+            "last_crawled": "2026-08-20T01:02:03",
+            "metadata": {
+                "creator": "Curator",
+                "category": "Software",
+                "tags": ["shareware", "preservation"],
+                "version": "2.4.1",
+            },
+            "created_with": {"name": "Custombuilder", "version": "3.0.0"},
+        }
+        info = SimpleNamespace(
+            path="C:/packages/archive.oder",
+            profile=profile,
+            scope="directory",
+            has_cache=True,
+            cache_entries=34571,
+            cache_folders=33975,
+            cache_files=596,
+            cache_size=36_490_000,
+            app_name="ODeR",
+            app_version="2026.0.1a",
+        )
+        dialog = ImportDirectoryDialog(info, [])
+        dialog.show()
+        self.app.processEvents()
+        summary = dialog.findChild(LibrarySummaryWidget)
+        artwork = summary.findChild(QLabel, "librarySummaryArtwork")
+        heading = next(
+            label for label in summary.findChildren(QLabel)
+            if label.objectName() == "pageTitle"
+        )
+        self.assertLess(
+            artwork.mapTo(dialog, QPoint(0, 0)).x(),
+            heading.mapTo(dialog, QPoint(0, 0)).x(),
+        )
+        self.assertEqual(heading.text(), "Import ODeR Library?")
+        self.assertEqual(summary.value_labels["Name"].text(), "Archive")
+        self.assertEqual(summary.value_labels["Link"].text(), profile["base_url"])
+        self.assertEqual(summary.value_labels["Creator/Curator"].text(), "Curator")
+        self.assertEqual(summary.value_labels["Category"].text(), "Software")
+        self.assertEqual(summary.value_labels["Tags"].text(), "shareware · preservation")
+        self.assertEqual(summary.value_labels["Version"].text(), "2.4.1")
+        self.assertIn("34'571 entries", summary.value_labels["Cached"].text())
+        self.assertEqual(summary.value_labels["Last updated"].text(), "2026/8/20 01:02")
+        self.assertEqual(summary.value_labels["Made with"].text(), "ODeR v2026.0.1a")
+        dialog.close()
+
+        multiple_links = dict(profile)
+        multiple_links["metadata"] = dict(
+            profile["metadata"],
+            links=["https://one.example/", "https://two.example/"],
+        )
+        multi_info = SimpleNamespace(**{**vars(info), "profile": multiple_links})
+        multiple_dialog = ImportDirectoryDialog(multi_info, [])
+        multiple_summary = multiple_dialog.findChild(LibrarySummaryWidget)
+        self.assertNotIn("Link", multiple_summary.value_labels)
+        multiple_dialog.close()
+
+        information = LibraryInformationDialog(
+            profile,
+            {"entries": 34571, "folders": 33975, "files": 596},
+            "Locally crawled index",
+        )
+        self.assertEqual(
+            information.summary.value_labels["Made with"].text(),
+            "Custombuilder 3.0.0",
+        )
+        self.assertIn("34'570 items", information.summary.value_labels["Cached"].text())
+        information.close()
+
+    def test_home_summary_uses_library_version_date_and_apostrophe_counts(self):
+        text = HomePage._meta_text(
+            {
+                "last_crawled": "2026-08-20T01:02:03",
+                "metadata": {"version": "2.4.1"},
+            },
+            {"entries": 34571, "folders": 33975, "files": 596},
+        )
+        self.assertIn("34'570 items", text)
+        self.assertIn("33'975 folders", text)
+        self.assertIn("v2.4.1 · 2026/8/20 01:02", text)
+        self.assertNotIn("Cached", text)
 
     def test_sidebar_utilities_collapse_and_downloads_live_in_status_bar(self):
         with (

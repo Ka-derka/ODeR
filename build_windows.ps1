@@ -4,35 +4,28 @@ $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Push-Location $projectRoot
 
 try {
+    $venvPython = Join-Path $projectRoot ".venv\Scripts\python.exe"
+    $pythonPath = if (Test-Path -LiteralPath $venvPython) { $venvPython } else { "python" }
+
     Write-Host "Verifying release metadata..."
-    python tools\verify_release.py
+    & $pythonPath tools\verify_release.py
 
     Write-Host "Installing/building Python dependencies..."
-    python -m pip install -r requirements.txt
-    python -m pip install pyinstaller
+    & $pythonPath -m pip install -r requirements.txt
+    & $pythonPath -m pip install pyinstaller
 
     foreach ($path in @("dist", "build", "installer-dist", "release-dist")) {
         if (Test-Path $path) { Remove-Item $path -Recurse -Force }
     }
 
-    Write-Host "Building portable single-file executable..."
-    python -m PyInstaller build.spec
+    Write-Host "Building ODeR installer payload..."
+    & $pythonPath -m PyInstaller build.spec
+
+    Write-Host "Building ODeR Creator installer payload..."
+    & $pythonPath -m PyInstaller creator.spec
 
     $releaseDir = Join-Path $projectRoot "release-dist"
-    $portableStage = Join-Path $releaseDir "ODeR-Portable"
-    New-Item -ItemType Directory -Path $portableStage -Force | Out-Null
-    $portableExe = Join-Path $releaseDir "ODeR-Portable.exe"
-    Copy-Item "dist\ODeR-Portable.exe" $portableExe
-    Copy-Item $portableExe $portableStage
-    Copy-Item "portable.flag" $portableStage
-    Copy-Item "LICENSE" $portableStage
-    Copy-Item "THIRD_PARTY_NOTICES.md" $portableStage
-
-    $portableZip = Join-Path $releaseDir "ODeR-Portable.zip"
-    Compress-Archive -Path (Join-Path $portableStage "*") -DestinationPath $portableZip -CompressionLevel Optimal
-    Remove-Item $portableStage -Recurse -Force
-    Write-Host "Portable executable: release-dist\ODeR-Portable.exe"
-    Write-Host "Portable package: release-dist\ODeR-Portable.zip"
+    New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
 
     $iscc = Get-Command iscc.exe -ErrorAction SilentlyContinue
     $isccPath = if ($iscc) { $iscc.Source } else { $null }
@@ -54,13 +47,14 @@ try {
         Write-Host "Building Inno Setup installer..."
         & $isccPath "installer.iss"
         Write-Host "Installer: release-dist\ODeR Installer.exe"
+        & $isccPath "creator_installer.iss"
+        Write-Host "Creator installer: release-dist\ODeR Creator Installer.exe"
     } else {
-        Write-Host "Inno Setup 6 (iscc.exe) was not found; the installer was skipped."
-        Write-Host "Install Inno Setup 6 and run this script again to create ODeR Installer.exe."
+        throw "Inno Setup 6 (iscc.exe) was not found. Install it to create the supported Windows installers."
     }
 
     $releaseAssets = Get-ChildItem -LiteralPath $releaseDir -File |
-        Where-Object { $_.Extension -in @(".zip", ".exe") } |
+        Where-Object { $_.Extension -eq ".exe" } |
         Sort-Object Name
     $checksumLines = foreach ($asset in $releaseAssets) {
         $hash = (Get-FileHash -LiteralPath $asset.FullName -Algorithm SHA256).Hash.ToLowerInvariant()

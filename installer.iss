@@ -2,8 +2,8 @@
 ; Build the standalone exe first with: pyinstaller build.spec
 
 #define MyAppName "ODeR"
-#define MyAppVersion "1.1.0-alpha.1"
-#define MyBuildExeName "ODeR-Portable.exe"
+#define MyAppVersion "1.1.0-alpha.2"
+#define MyBuildExeName "ODeR.exe"
 #define MyAppExeName "ODeR.exe"
 
 [Setup]
@@ -42,6 +42,10 @@ Root: HKCR; Subkey: ".oder"; ValueType: string; ValueName: ""; ValueData: "ODeR.
 Root: HKCR; Subkey: "ODeR.DirectoryPackage"; ValueType: string; ValueName: ""; ValueData: "ODeR directory package"; Flags: uninsdeletekey
 Root: HKCR; Subkey: "ODeR.DirectoryPackage\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppExeName},0"
 Root: HKCR; Subkey: "ODeR.DirectoryPackage\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""
+Root: HKCR; Subkey: ".odrlib"; ValueType: string; ValueName: ""; ValueData: "ODeR.LibraryPackage"; Flags: uninsdeletevalue
+Root: HKCR; Subkey: "ODeR.LibraryPackage"; ValueType: string; ValueName: ""; ValueData: "ODeR curated library"; Flags: uninsdeletekey
+Root: HKCR; Subkey: "ODeR.LibraryPackage\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppExeName},0"
+Root: HKCR; Subkey: "ODeR.LibraryPackage\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"

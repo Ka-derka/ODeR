@@ -20,6 +20,9 @@ data/
 downloads/
 *.part
 *.oder
+*.odrlib
+*.odrproj
+*.odrlib-feed.json
 *.sqlite
 *.sqlite3
 *.sqlite3-wal
@@ -35,6 +38,8 @@ installer-dist/
 release-dist/
 *.exe
 *.msi
+*.dmg
+*.app/
 
 # Editors and operating systems
 .idea/
@@ -59,6 +64,8 @@ alpha1-dist/ODeR-1.1.0-alpha.1-Source.zip
 alpha1-dist/ODeR-Portable.zip
 alpha1-dist/RELEASE_NOTES_1.1.0-alpha.1.md
 alpha1-dist/SHA256SUMS.txt
+2026.0.1a-dist/
+alpha2-dist/
 CHANGELOG.md
 CHANGELOG.md
 RELEASE_NOTES_1.1.0-alpha.1.md

@@ -1,8 +1,8 @@
-"""Application paths for source, portable and installed builds.
+"""Application paths for source, legacy portable, and installed builds.
 
-Portable builds keep their writable ``data`` directory beside the executable.
-Installed builds use the current user's local application-data directory so
-they can run normally from a protected location such as Program Files.
+New releases are installed applications. Windows uses Local AppData and macOS
+uses Application Support. The old portable marker remains readable solely so
+existing pre-Alpha-2 copies do not unexpectedly move their data.
 """
 import os
 import sys
@@ -36,6 +36,8 @@ def is_portable():
 def data_dir():
     if not getattr(sys, "frozen", False) or is_portable():
         d = os.path.join(app_root(), "data")
+    elif sys.platform == "darwin":
+        d = os.path.join(os.path.expanduser("~"), "Library", "Application Support", "ODeR")
     else:
         local_app_data = os.environ.get("LOCALAPPDATA")
         if not local_app_data:

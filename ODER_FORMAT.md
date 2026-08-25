@@ -70,7 +70,9 @@ Additional JSON properties may be added in a compatible ODeR release. Readers sh
     "description": "A curated collection of public-domain software.",
     "creator": "Example curator",
     "category": "Software",
+    "version": "2026.8",
     "tags": ["shareware", "preservation"],
+    "links": ["https://example.com/catalog"],
     "artwork_data_uri": "data:image/jpeg;base64,..."
   }
 }
@@ -80,7 +82,9 @@ Additional JSON properties may be added in a compatible ODeR release. Readers sh
 
 A full package may also contain `cache_state`, which carries nonessential crawl metadata such as the last crawl time and recent history. A subtree definition may contain `source_directory` provenance. Neither changes the package's authority: the validated base URL and cache contents remain decisive.
 
-ODeR 1.1 adds the optional `metadata` object without changing profile schema 1. Text lengths, tag counts, and embedded artwork are bounded; artwork must be a validated PNG, JPEG, or WebP image no larger than 1 MiB. Because version 1 readers ignore additional JSON properties, ODeR 1.0 can still open these packages and safely ignores presentation fields it does not understand.
+ODeR 1.1 adds the optional `metadata` object without changing profile schema 1. Text lengths, tag/link counts, HTTP(S) links, and embedded artwork are bounded; artwork must be a validated PNG, JPEG, or WebP image no larger than 1 MiB. The optional `version` describes the library's content release, not the ODeR application version. A single link can be presented as the library's primary address; interfaces intentionally omit that field when no link or multiple links are supplied. Because version 1 readers ignore additional JSON properties, ODeR 1.0 can still open these packages and safely ignores presentation fields it does not understand.
+
+The manifest's `application.name` and `application.version` identify the tool that created the package. ODeR displays these as “Made with ODeR v…” or with the name and version supplied by a compatible custom builder.
 
 ## Cached index
 

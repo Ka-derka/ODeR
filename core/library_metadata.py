@@ -4,13 +4,16 @@ from __future__ import annotations
 import base64
 import binascii
 import re
+from urllib.parse import urlsplit
 
 
 MAX_DESCRIPTION_LENGTH = 4000
 MAX_CREATOR_LENGTH = 200
 MAX_CATEGORY_LENGTH = 100
+MAX_VERSION_LENGTH = 100
 MAX_TAGS = 20
 MAX_TAG_LENGTH = 50
+MAX_LINKS = 20
 MAX_ARTWORK_BYTES = 1024 * 1024
 
 _ARTWORK_URI = re.compile(
@@ -88,6 +91,7 @@ def normalize_library_metadata(value, *, strict=False):
         ("description", MAX_DESCRIPTION_LENGTH, "description"),
         ("creator", MAX_CREATOR_LENGTH, "creator or curator"),
         ("category", MAX_CATEGORY_LENGTH, "category"),
+        ("version", MAX_VERSION_LENGTH, "version"),
     ):
         normalized = _text(value.get(key), limit, label, strict)
         if normalized:
@@ -114,6 +118,33 @@ def normalize_library_metadata(value, *, strict=False):
             break
     if tags:
         result["tags"] = tags
+
+    raw_links = value.get("links")
+    if raw_links is not None:
+        if isinstance(raw_links, str):
+            raw_links = [raw_links]
+        if not isinstance(raw_links, (list, tuple)):
+            if strict:
+                raise LibraryMetadataError("Library links must be a list of HTTP or HTTPS URLs.")
+            raw_links = []
+        links = []
+        seen_links = set()
+        for raw in raw_links:
+            link = _text(raw, 2048, "link", strict)
+            parsed = urlsplit(link)
+            if not link or parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+                if strict and link:
+                    raise LibraryMetadataError("Library links must use valid HTTP or HTTPS URLs.")
+                continue
+            folded = link.casefold()
+            if folded not in seen_links:
+                links.append(link)
+                seen_links.add(folded)
+            if len(links) >= MAX_LINKS:
+                if strict and len(raw_links) > MAX_LINKS:
+                    raise LibraryMetadataError(f"A library can have at most {MAX_LINKS} links.")
+                break
+        result["links"] = links
 
     artwork = value.get("artwork_data_uri")
     if artwork:

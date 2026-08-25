@@ -101,11 +101,30 @@ class OderPackageTests(unittest.TestCase):
         exported = oder_package.export_directory(updated, target, include_cache=False)
         inspected = oder_package.inspect_package(exported.path)
         self.assertEqual(inspected.profile["schema_version"], 1)
+        self.assertEqual(inspected.app_name, "ODeR")
         self.assertEqual(inspected.profile["metadata"], metadata)
 
         imported = oder_package.import_directory(exported.path, conflict_policy="copy")
         self.assertEqual(imported.profile["metadata"], metadata)
+        self.assertEqual(imported.profile["created_with"]["version"], inspected.app_version)
         self.assertEqual(profiles.get_profile(imported.profile["id"])["metadata"], metadata)
+
+    def test_custom_builder_identity_is_preserved_for_import_information(self):
+        with (
+            patch.object(oder_package, "APP_NAME", "Custombuilder"),
+            patch.object(oder_package, "APP_VERSION", "2.3.0"),
+        ):
+            exported = oder_package.export_directory(
+                self.profile, os.path.join(self.temp.name, "custom.oder"), include_cache=False,
+            )
+        inspected = oder_package.inspect_package(exported.path)
+        self.assertEqual(inspected.app_name, "Custombuilder")
+        self.assertEqual(inspected.app_version, "2.3.0")
+        imported = oder_package.import_directory(exported.path, conflict_policy="copy")
+        self.assertEqual(
+            imported.profile["created_with"],
+            {"name": "Custombuilder", "version": "2.3.0"},
+        )
 
     def test_definition_replace_keeps_existing_cache(self):
         target = os.path.join(self.temp.name, "replace.oder")
