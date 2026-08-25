@@ -1,6 +1,6 @@
 # ODeR Library (`.odrlib`) format version 1
 
-Status: written by ODeR Creator 2026.0.1a and read by ODeR 1.1.0-alpha.2.
+Status: written by ODeR Creator 2026.0.2a and read by ODeR 1.1.0-alpha.3.
 
 An `.odrlib` file is an immutable ZIP/ZIP64 container for a curated catalog, its artwork, optional bundled files, and references to downloads. It is intentionally different from `.oder`, which represents one cached web-directory index. Format version 1 is a stable core with independently versioned extensions; features such as online updating and future BitTorrent sources do not require an `.odrlib2` rename.
 
@@ -15,6 +15,8 @@ assets/library-cover.png|jpg|webp
 assets/items/<item UUID>.png|jpg|webp
 payload/<item UUID>/<artifact UUID>/<filename>
 licenses/...
+extensions/T1.json
+torrents/library.torrent
 ```
 
 Only `manifest.json`, `library.json`, `catalog/items-0001.json`, and `catalog/collections.json` are required. Assets, payloads, and license files are optional. Version 1 readers must not infer undeclared content from ZIP paths.
@@ -33,7 +35,7 @@ All paths use `/`, are relative, and may not contain empty, `.` or `..` componen
   "created_at": "2026-08-20T12:00:00Z",
   "application": {
     "name": "ODeR Creator",
-    "version": "2026.0.1a"
+    "version": "2026.0.2a"
   },
   "library": {
     "id": "726f470c-e318-4fda-99e5-e6412f851f83",
@@ -71,7 +73,7 @@ All paths use `/`, are relative, and may not contain empty, `.` or `..` componen
 
 `package_id` changes for every build. `library.id` remains permanent across every revision of the same library. `library.revision` is a monotonically increasing positive integer used for reliable update ordering; `library.version` is a curator-controlled display label.
 
-Every member except `manifest.json` must appear exactly once in `members`. Supported roles are `catalog`, `asset`, `payload`, and `license`. Size and SHA-256 must match the uncompressed member data.
+Every member except `manifest.json` must appear exactly once in `members`. Supported roles are `catalog`, `asset`, `payload`, `license`, `extension`, and `torrent`. Size and SHA-256 must match the uncompressed member data.
 
 Readers reject unknown required capabilities. Unknown optional capabilities may be ignored when doing so cannot change the meaning or integrity of recognized content.
 
@@ -85,7 +87,7 @@ Readers reject unknown required capabilities. Unknown optional capabilities may 
 - Extensions add behaviour and source mechanisms; they do not silently weaken core path, size, member, or checksum checks.
 - A package without `extensions` is valid legacy `.odrlib` v1. Early Alpha 2 packages that combine `update-feed-v1` with a valid feed URL are interpreted as U1.
 
-Alpha 2 implements `U1` (verified HTTPS update feeds). `T1` is reserved for Alpha 3's BitTorrent source and creation contract and is intentionally not accepted as a required extension yet. A future incompatible container or catalog redesign may increment `format_version`; adding a known extension does not.
+Alpha 2 implements `U1` (verified HTTPS update feeds). Alpha 3 implements `T1` (mapped BitTorrent sources and automatic metainfo creation). A future incompatible container or catalog redesign may increment `format_version`; adding a known extension does not.
 
 The extension lifecycle, authoring rules, U1 contract, and Alpha 3 T1 boundary are documented in [ODRLIB_EXTENSIONS.md](ODRLIB_EXTENSIONS.md).
 
@@ -178,7 +180,22 @@ Remote links and update URLs use HTTPS. Artwork is PNG, JPEG, or WebP and must b
 }
 ```
 
-Version 1 supports `embedded` and `https` sources. A single artifact can offer both, allowing the bundled copy to work offline while retaining an official or mirrored online source. An embedded source must point to a declared `payload` member and repeat its exact size and SHA-256. Online-only artifacts may omit size and SHA-256, although Creator warns because integrity cannot then be checked before download.
+The version 1 core supports `embedded` and `https` sources. Extension T1 adds `torrent` sources. A single artifact may offer several types, allowing a bundled or HTTPS fallback alongside peer-to-peer distribution. An embedded source must point to a declared `payload` member and repeat its exact size and SHA-256. Online-only HTTPS artifacts may omit size and SHA-256, although Creator warns because integrity cannot then be checked before download. T1 sources always include both.
+
+A T1 catalog source has this shape:
+
+```json
+{
+  "type": "torrent",
+  "torrent_id": "3f07a3c1-0603-451f-a8d4-e53718e363ad",
+  "file_index": 0,
+  "path": "Example Library/tools/utility.zip",
+  "size": 123456,
+  "sha256": "<64 lowercase hexadecimal characters>"
+}
+```
+
+`extensions/T1.json` maps every advertised source to the same artifact UUID and to an exact file in the embedded metainfo. ODeR validates the mapping, decoded metainfo, info hashes, member declarations, safe paths, and integrity fields as one unit. T1 is optional only when every torrent-backed artifact also has an embedded or HTTPS fallback; it is required when any artifact is torrent-only.
 
 ODeR treats artifacts as downloads. Packages cannot request execution, installation, post-processing, scripts, registry changes, or elevated privileges.
 
@@ -220,7 +237,7 @@ When U1 is declared, `library.update.feed_url` is required and must use HTTPS. C
     "url": "https://example.org/library.odrlib",
     "size": 123456789,
     "sha256": "<SHA-256 of the complete .odrlib file>",
-    "minimum_reader": "1.1.0-alpha.2",
+    "minimum_reader": "1.1.0-alpha.3",
     "release_notes": "Added five preservation tools."
   }
 }
@@ -236,7 +253,7 @@ An `.odrproj` file is editable Creator state, not a distributable library. It co
 
 Consumers should receive `.odrlib`, not `.odrproj`.
 
-## Safety limits implemented by Creator 2026.0.1a and ODeR 1.1.0-alpha.2
+## Safety limits implemented by Creator 2026.0.2a and ODeR 1.1.0-alpha.3
 
 - 250,000 ZIP members
 - 200,000 catalog items
@@ -246,6 +263,7 @@ Consumers should receive `.odrlib`, not `.odrproj`.
 - 128 GiB per member
 - 1 TiB total uncompressed data
 - 16 MiB per artwork asset
+- 32 MiB per embedded torrent metainfo file
 - 500:1 maximum compression ratio
 - ZIP Stored and DEFLATE compression only
 - HTTPS remote sources only

@@ -837,6 +837,18 @@ class SettingsPage(QWidget):
         self.external_browser=QCheckBox('Open protected/download URLs in the system browser'); self.external_browser.setChecked(bool(self._settings.get('open_external_downloads_in_browser',True))); nf.addRow(self.external_browser)
         self.follow_redirects=QCheckBox('Follow normal HTTP redirects'); self.follow_redirects.setChecked(bool(self._settings.get('follow_redirects',True))); nf.addRow(self.follow_redirects); form.addWidget(network)
 
+        torrents=CollapsibleSection("Torrent downloads", "T1 peer discovery, privacy and transfer limits", False, layout_type="form"); tf=torrents.body_layout
+        self.torrent_enabled=QCheckBox('Enable T1 torrent downloads'); self.torrent_enabled.setChecked(bool(self._settings.get('torrent_enabled',True))); tf.addRow(self.torrent_enabled)
+        self.torrent_dht=QCheckBox('Use the distributed hash table (DHT)'); self.torrent_dht.setChecked(bool(self._settings.get('torrent_enable_dht',True))); tf.addRow(self.torrent_dht)
+        self.torrent_lsd=QCheckBox('Discover peers on the local network'); self.torrent_lsd.setChecked(bool(self._settings.get('torrent_enable_lsd',True))); tf.addRow(self.torrent_lsd)
+        self.torrent_upnp=QCheckBox('Allow UPnP port mapping'); self.torrent_upnp.setChecked(bool(self._settings.get('torrent_enable_upnp',False))); tf.addRow(self.torrent_upnp)
+        self.torrent_natpmp=QCheckBox('Allow NAT-PMP port mapping'); self.torrent_natpmp.setChecked(bool(self._settings.get('torrent_enable_natpmp',False))); tf.addRow(self.torrent_natpmp)
+        self.torrent_connections=QSpinBox(); self.torrent_connections.setRange(10,1000); self.torrent_connections.setValue(int(self._settings.get('torrent_connections_limit',80))); tf.addRow('Peer limit per job',self.torrent_connections)
+        self.torrent_download_limit=QSpinBox(); self.torrent_download_limit.setRange(0,10_000_000); self.torrent_download_limit.setSuffix(' KiB/s'); self.torrent_download_limit.setSpecialValueText('Unlimited'); self.torrent_download_limit.setValue(int(self._settings.get('torrent_download_limit_kib',0))); tf.addRow('Download limit per job',self.torrent_download_limit)
+        self.torrent_upload_limit=QSpinBox(); self.torrent_upload_limit.setRange(0,10_000_000); self.torrent_upload_limit.setSuffix(' KiB/s'); self.torrent_upload_limit.setSpecialValueText('Unlimited'); self.torrent_upload_limit.setValue(int(self._settings.get('torrent_upload_limit_kib',0))); tf.addRow('Upload limit per job',self.torrent_upload_limit)
+        torrent_hint=QLabel('Torrent jobs never start when a library is imported. ODeR fetches only the file you choose, verifies its declared size and SHA-256, and stops the torrent after completion. DHT and local discovery expose the torrent info hash and your peer address to other participants.'); torrent_hint.setObjectName('mutedLabel'); torrent_hint.setWordWrap(True); tf.addRow('',torrent_hint)
+        form.addWidget(torrents)
+
         appearance=CollapsibleSection("Appearance", "built-in themes and a visual custom palette", False, layout_type="form"); af=appearance.body_layout
         self.theme=QComboBox()
         for label, key in THEME_CHOICES:
@@ -956,6 +968,7 @@ class SettingsPage(QWidget):
     def reset(self):
         self.download_dir.setText(downloads_root()); self.dl_concurrency.setValue(2); self.dl_delay.setValue(0.5); self.overwrite_downloads.setChecked(True)
         self.timeout.setValue(20); self.max_connections.setValue(12); self.backoff.setValue(60); self.user_agent.setText(f'ODeR/{APP_VERSION}'); self.external_browser.setChecked(True); self.follow_redirects.setChecked(True)
+        self.torrent_enabled.setChecked(True); self.torrent_dht.setChecked(True); self.torrent_lsd.setChecked(True); self.torrent_upnp.setChecked(False); self.torrent_natpmp.setChecked(False); self.torrent_connections.setValue(80); self.torrent_download_limit.setValue(0); self.torrent_upload_limit.setValue(0)
         idx=self.theme.findData('dark'); self.theme.setCurrentIndex(idx if idx >= 0 else 0); self.remember_sidebar.setChecked(False); self.lazy.setChecked(True); self.startup_check.setChecked(True); self.startup_init.setChecked(True); self.confirm_full.setChecked(True); self.resume_startup.setChecked(False); self.notify_changes.setChecked(True); self.stale_days.setValue(7); self.page_size.setValue(500); self.auto_updates.setChecked(True); self.update_channel.setCurrentIndex(self.update_channel.findData('stable'))
         defaults=THEME_PRESETS['dark']
         for k,v in defaults.items(): self.color_fields[k].set_color(v)
@@ -966,7 +979,7 @@ class SettingsPage(QWidget):
             bad=[k for k,v in colors.items() if not _normalize_hex(v)]
             if bad: QMessageBox.warning(self,'Invalid theme color',f"These colors are not valid #RRGGBB values: {', '.join(bad)}"); return
             colors={k:_normalize_hex(v) for k,v in colors.items()}
-        vals={'download_dir':self.download_dir.text().strip(),'download_concurrency':self.dl_concurrency.value(),'download_start_delay':self.dl_delay.value(),'skip_existing_downloads':self.overwrite_downloads.isChecked(),'request_timeout_seconds':self.timeout.value(),'network_max_connections':self.max_connections.value(),'network_backoff_seconds':self.backoff.value(),'user_agent':self.user_agent.text().strip(),'open_external_downloads_in_browser':self.external_browser.isChecked(),'follow_redirects':self.follow_redirects.isChecked(),'theme':theme,'custom_theme':colors,'sidebar_collapsed':False,'lazy_directory_browsing':self.lazy.isChecked(),'startup_check_directories':self.startup_check.isChecked(),'startup_initialize_caches':self.startup_init.isChecked(),'confirm_full_updates':self.confirm_full.isChecked(),'resume_crawls_at_startup':self.resume_startup.isChecked(),'notify_directory_changes':self.notify_changes.isChecked(),'incremental_stale_days':self.stale_days.value(),'browser_page_size':self.page_size.value(),'automatic_update_checks':self.auto_updates.isChecked(),'update_channel':self.update_channel.currentData() or 'stable'}
+        vals={'download_dir':self.download_dir.text().strip(),'download_concurrency':self.dl_concurrency.value(),'download_start_delay':self.dl_delay.value(),'skip_existing_downloads':self.overwrite_downloads.isChecked(),'request_timeout_seconds':self.timeout.value(),'network_max_connections':self.max_connections.value(),'network_backoff_seconds':self.backoff.value(),'user_agent':self.user_agent.text().strip(),'open_external_downloads_in_browser':self.external_browser.isChecked(),'follow_redirects':self.follow_redirects.isChecked(),'torrent_enabled':self.torrent_enabled.isChecked(),'torrent_enable_dht':self.torrent_dht.isChecked(),'torrent_enable_lsd':self.torrent_lsd.isChecked(),'torrent_enable_upnp':self.torrent_upnp.isChecked(),'torrent_enable_natpmp':self.torrent_natpmp.isChecked(),'torrent_connections_limit':self.torrent_connections.value(),'torrent_download_limit_kib':self.torrent_download_limit.value(),'torrent_upload_limit_kib':self.torrent_upload_limit.value(),'theme':theme,'custom_theme':colors,'sidebar_collapsed':False,'lazy_directory_browsing':self.lazy.isChecked(),'startup_check_directories':self.startup_check.isChecked(),'startup_initialize_caches':self.startup_init.isChecked(),'confirm_full_updates':self.confirm_full.isChecked(),'resume_crawls_at_startup':self.resume_startup.isChecked(),'notify_directory_changes':self.notify_changes.isChecked(),'incremental_stale_days':self.stale_days.value(),'browser_page_size':self.page_size.value(),'automatic_update_checks':self.auto_updates.isChecked(),'update_channel':self.update_channel.currentData() or 'stable'}
         save_settings(vals); self.settings_changed.emit(); QMessageBox.information(self,'Settings saved','Settings saved. Theme and sidebar changes are applied immediately; network/download defaults apply to new work and background workers.')
 
 
@@ -2777,6 +2790,21 @@ class MainWindow(QMainWindow):
             downloader.enqueue(profile_id, profile["name"], source.get("url"), filename, folder)
             self._show_special("downloads")
             self.statusBar().showMessage(f"Queued {filename}", 7000)
+            return
+        if source.get("type") == "torrent":
+            if not load_settings().get("torrent_enabled", True):
+                QMessageBox.information(
+                    self, "Torrent downloads disabled",
+                    "Enable T1 torrent downloads in Settings, then try again.",
+                )
+                return
+            try:
+                downloader.enqueue_torrent(profile_id, profile["name"], source, filename, folder)
+            except (TypeError, ValueError) as exc:
+                QMessageBox.warning(self, "Torrent source unavailable", str(exc))
+                return
+            self._show_special("downloads")
+            self.statusBar().showMessage(f"Queued {filename} through T1 torrent", 7000)
             return
         if source.get("type") != "embedded":
             QMessageBox.warning(self, "Source unavailable", "This download source is not supported.")

@@ -4,11 +4,11 @@
 
 ODeR is a PySide6 desktop application for indexing web directory listings, browsing the cached tree offline, tracking changes, and downloading selected files. Each tracked location appears as a library with its own crawl and download settings, while the local SQLite index remains fast enough for large archives.
 
-Current version: **1.1.0-alpha.2**
+Current version: **1.1.0-alpha.3**
 
-Current Creator version: **2026.0.1a**
+Current Creator version: **2026.0.2a**
 
-ODeR 1.1.0 Alpha 2 can install and browse Creator-built `.odrlib` v1 catalogs, use bundled or HTTPS file sources, and safely apply curator-published U1 library updates. ODeR Creator keeps its independent calendar-style version line for the curator workstation.
+ODeR 1.1.0 Alpha 3 can install and browse Creator-built `.odrlib` v1 catalogs, use bundled, HTTPS, or T1 torrent file sources, and safely apply curator-published U1 library updates. ODeR Creator keeps its independent calendar-style version line for the curator workstation.
 
 ## Highlights
 
@@ -22,7 +22,7 @@ ODeR 1.1.0 Alpha 2 can install and browse Creator-built `.odrlib` v1 catalogs, u
 - Manage libraries from responsive Home tiles with settings, information, and export actions in each tile's menu.
 - Give libraries portable artwork, descriptions, creator/curator credits, categories, and tags.
 - Import, browse, search, update, and download from checksum-verified `.odrlib` v1 catalogs made by ODeR Creator.
-- Author `.odrproj` workspaces in the separate ODeR Creator application and export `.odrlib` v1 catalogs with folders, bundled files, HTTPS mirrors, licensing metadata, and U1 update feeds.
+- Author `.odrproj` workspaces in the separate ODeR Creator application and export `.odrlib` v1 catalogs with folders, optional bundles, HTTPS mirrors, U1 update feeds, and T1 torrents.
 - Export either a complete library or a selected subtree.
 - Manage, repair, compact, or clear cached indexes without touching downloads.
 - Choose Graphite, Midnight, Light, OLED Black, or a custom color palette.
@@ -37,6 +37,7 @@ ODeR 1.1.0 Alpha 2 can install and browse Creator-built `.odrlib` v1 catalogs, u
 - Python 3.11 or newer
 - PySide6 6.6 or newer
 - Requests 2.31 or newer
+- libtorrent 2.1.1
 
 Supported packaged builds are the Windows installer and native macOS `.app`/DMG. Linux and other PySide6 desktop platforms can run from source.
 
@@ -93,7 +94,7 @@ The script creates `ODeR.app` and `ODeR Creator.app`, wraps each in a distributa
 
 Installed builds can check GitHub for stable or preview releases from **Settings → Application updates**. ODeR checks at most once per day when automatic checks are enabled, and manual **Check now** and **View releases** actions are always available. Update checks send only the normal GitHub request and ODeR version user-agent; local directory URLs, searches, downloads, and usage data are not sent.
 
-ODeR scans recent published releases and selects the newest compatible download, so a malformed tag or incomplete release does not block valid updates. It understands semantic prereleases and legacy calendar-style tags. Stable-channel users do not receive prereleases; testers can select the Preview channel for versions such as `1.1.0-alpha.2`.
+ODeR scans recent published releases and selects the newest compatible download, so a malformed tag or incomplete release does not block valid updates. It understands semantic prereleases and legacy calendar-style tags. Stable-channel users do not receive prereleases; testers can select the Preview channel for versions such as `1.1.0-alpha.3`.
 
 The updater streams the Windows installer or macOS DMG into ODeR's user-data update folder and verifies its SHA-256 digest before offering to open it. GitHub's asset digest is preferred, with `SHA256SUMS.txt` as a fallback. Downloads are checked for expected size, available disk space, file type, and trusted HTTPS origin. Failed partials are removed, while an already downloaded and verified update can be safely reused. On Windows, installation can wait until crawls and downloads become idle; on macOS, ODeR opens the verified disk image and explains how to replace the application.
 
@@ -137,9 +138,9 @@ Definition-only packages are small and must be indexed after import. Full packag
 
 ## ODeR Creator and `.odrlib`
 
-ODeR Creator is the power-user companion for curators, archivists, and distributors. It keeps editable source paths and unfinished metadata in `.odrproj` projects, then builds immutable `.odrlib` packages. Creator presents a straightforward folders-and-files workflow: choose a folder while adding or editing a file, then configure its bundled copy and HTTPS mirrors on the same screen. It also supports library and file metadata, artwork, folder imports, platform and architecture labels, rights information, automatic hashes, validation, update-feed generation, and ODeR-style previews.
+ODeR Creator is the power-user companion for curators, archivists, and distributors. It keeps editable source paths and unfinished metadata in `.odrproj` projects, then builds immutable `.odrlib` packages. Its recursive folder importer presents per-file choices for catalog inclusion, optional bundling, and T1 torrent inclusion while preserving subfolders. It also supports library and file metadata, artwork, HTTPS mirrors, platform and architecture labels, rights information, automatic hashes, validation, update-feed generation, tracker and web-seed settings, and ODeR-style previews.
 
-`.odrlib` is a distinct ZIP/ZIP64 format for curated catalogs and optional content bundles. Each package has permanent library/item/artifact IDs, an update revision, a curator-facing version, declared sizes and SHA-256 hashes, and explicit source types. ODeR imports the package into managed application storage, keeps the original safe to share, and shows its folders and files in a read-only library tab. Bundled files are verified again while extracting; online mirrors use the normal Downloads queue. The stable v1 core has separately versioned extensions: Alpha 2 implements verified updating as `U1`, and Alpha 3 can introduce BitTorrent support as `T1` without changing the `.odrlib` extension. See the [format contract](ODRLIB_FORMAT.md) and [extension registry](ODRLIB_EXTENSIONS.md).
+`.odrlib` is a distinct ZIP/ZIP64 format for curated catalogs and optional content bundles. Each package has permanent library/item/artifact IDs, an update revision, a curator-facing version, declared sizes and SHA-256 hashes, and explicit source types. ODeR imports the package into managed application storage, keeps the original safe to share, and shows its folders and files in a read-only library tab. Bundled files are verified again while extracting; HTTPS and T1 files share the normal Downloads queue and preserve folder structure. The stable v1 core has separately versioned extensions: verified updating is `U1` and BitTorrent distribution is `T1`, so either or both can be added without changing the `.odrlib` extension. Torrent jobs start only after the user selects a T1 source; settings control DHT, local discovery, port mapping, peer limits, and transfer limits. See the [format contract](ODRLIB_FORMAT.md) and [extension registry](ODRLIB_EXTENSIONS.md).
 
 ## Hosted `.oder` indexes
 

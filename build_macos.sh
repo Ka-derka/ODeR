@@ -4,13 +4,20 @@ set -euo pipefail
 project_root="$(cd "$(dirname "$0")" && pwd)"
 cd "$project_root"
 
-python3 tools/verify_release.py
-python3 -m pip install -r requirements.txt
-python3 -m pip install pyinstaller pillow
+brew install python@3.14 libtorrent-rasterbar
+build_python="$(brew --prefix python@3.14)/bin/python3.14"
+torrent_site="$(brew --prefix libtorrent-rasterbar)/lib/python3.14/site-packages"
+export PYTHONPATH="$torrent_site${PYTHONPATH:+:$PYTHONPATH}"
+"$build_python" -m venv --system-site-packages .macos-build-venv
+build_python="$project_root/.macos-build-venv/bin/python"
+"$build_python" -m pip install -r requirements.txt
+"$build_python" -m pip install pyinstaller pillow
+"$build_python" -c "import libtorrent; print('libtorrent', libtorrent.__version__)"
+"$build_python" tools/verify_release.py
 
 rm -rf build dist release-dist dmg-stage
-python3 -m PyInstaller --noconfirm build_macos.spec
-python3 -m PyInstaller --noconfirm creator_macos.spec
+"$build_python" -m PyInstaller --noconfirm build_macos.spec
+"$build_python" -m PyInstaller --noconfirm creator_macos.spec
 
 mkdir -p release-dist
 mkdir -p "dmg-stage/ODeR" "dmg-stage/ODeR Creator"

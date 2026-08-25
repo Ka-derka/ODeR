@@ -6,8 +6,8 @@ import re
 
 APP_NAME = "ODeR"
 CREATOR_NAME = "ODeR Creator"
-APP_VERSION = "1.1.0-alpha.2"
-CREATOR_VERSION = "2026.0.1a"
+APP_VERSION = "1.1.0-alpha.3"
+CREATOR_VERSION = "2026.0.2a"
 
 
 def windows_version_tuple(value=APP_VERSION):

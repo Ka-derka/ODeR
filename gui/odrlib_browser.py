@@ -147,11 +147,14 @@ class OdrLibBrowserWidget(QWidget):
     def _source_label(artifact):
         embedded = sum(source.get("type") == "embedded" for source in artifact.get("sources") or [])
         online = sum(source.get("type") == "https" for source in artifact.get("sources") or [])
+        torrent = sum(source.get("type") == "torrent" for source in artifact.get("sources") or [])
         labels = []
         if embedded:
             labels.append("Bundled")
         if online:
             labels.append(f"HTTPS ×{online}" if online > 1 else "HTTPS")
+        if torrent:
+            labels.append("Torrent")
         return " + ".join(labels) or "Unavailable"
 
     def _artifact_node(self, item, artifact, folder_name=""):
@@ -266,6 +269,8 @@ class OdrLibBrowserWidget(QWidget):
         for source in sources:
             if source.get("type") == "embedded":
                 label = "Use bundled offline copy"
+            elif source.get("type") == "torrent":
+                label = "Download with T1 torrent"
             else:
                 host = urlsplit(source.get("url") or "").hostname or "HTTPS mirror"
                 label = f"Download from {host}"

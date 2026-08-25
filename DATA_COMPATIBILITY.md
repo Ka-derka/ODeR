@@ -11,7 +11,7 @@ Settings, profiles, the download queue, favorites, package history, and per-dire
   "format": "oder-state",
   "kind": "settings",
   "schema_version": 1,
-  "written_by": "1.1.0-alpha.2",
+  "written_by": "1.1.0-alpha.3",
   "data": {}
 }
 ```

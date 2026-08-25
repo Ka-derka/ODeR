@@ -36,17 +36,24 @@ FEED_FORMAT_VERSION = 1
 # reader can make a safe decision without guessing from catalog fields.
 UPDATE_EXTENSION_ID = "U"
 UPDATE_EXTENSION_VERSION = 1
-TORRENT_EXTENSION_ID = "T"  # Reserved for Alpha 3; deliberately unsupported here.
-SUPPORTED_EXTENSIONS = {UPDATE_EXTENSION_ID: {UPDATE_EXTENSION_VERSION}}
+TORRENT_EXTENSION_ID = "T"
+TORRENT_EXTENSION_VERSION = 1
+SUPPORTED_EXTENSIONS = {
+    UPDATE_EXTENSION_ID: {UPDATE_EXTENSION_VERSION},
+    TORRENT_EXTENSION_ID: {TORRENT_EXTENSION_VERSION},
+}
 
 MANIFEST_NAME = "manifest.json"
 LIBRARY_NAME = "library.json"
 ITEMS_NAME = "catalog/items-0001.json"
 COLLECTIONS_NAME = "catalog/collections.json"
+TORRENT_EXTENSION_NAME = "extensions/T1.json"
+TORRENT_METAINFO_NAME = "torrents/library.torrent"
 
 MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 MAX_CATALOG_BYTES = 128 * 1024 * 1024
 MAX_ASSET_BYTES = 16 * 1024 * 1024
+MAX_TORRENT_BYTES = 32 * 1024 * 1024
 MAX_MEMBER_BYTES = 128 * 1024 * 1024 * 1024
 MAX_TOTAL_BYTES = 1024 * 1024 * 1024 * 1024
 MAX_MEMBERS = 250_000
@@ -59,7 +66,7 @@ MAX_COMPRESSION_RATIO = 500
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _EXTENSION_ID_RE = re.compile(r"^[A-Z][A-Z0-9-]{0,31}$")
 _IMAGE_EXTENSIONS = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
-_MEMBER_ROLES = {"asset", "catalog", "license", "payload"}
+_MEMBER_ROLES = {"asset", "catalog", "extension", "license", "payload", "torrent"}
 
 
 class OdrLibError(ValueError):
@@ -121,6 +128,7 @@ class BuildResult:
     package: LibraryPackageInfo
     warnings: tuple[ValidationIssue, ...]
     feed_path: str | None = None
+    torrent_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -200,6 +208,18 @@ def _portable_url(value):
     elif text and "://" not in text:
         text = "https://" + text
     return _https_url(text) or text
+
+
+def _tracker_url(value):
+    text = _clean_text(value, 4096)
+    parts = urlsplit(text)
+    return text if parts.scheme.casefold() in {"http", "https", "udp"} and parts.netloc else None
+
+
+def _web_seed_url(value):
+    text = _clean_text(value, 4096)
+    parts = urlsplit(text)
+    return text if parts.scheme.casefold() in {"http", "https"} and parts.netloc else None
 
 
 def _url_list(value, *, maximum=20):
@@ -299,12 +319,18 @@ def _detect_image(path):
     raise OdrLibError(f"Artwork is not a supported PNG, JPEG, or WebP image: {path}")
 
 
-def new_artifact(*, name="New file", embedded_path="", url=""):
+def new_artifact(*, name="New file", embedded_path="", url="", torrent_path="", relative_path=""):
     sources = []
     if embedded_path:
         sources.append({"type": "embedded", "source_path": str(embedded_path)})
     if url:
         sources.append({"type": "https", "url": str(url)})
+    if torrent_path:
+        sources.append({
+            "type": "torrent",
+            "source_path": str(torrent_path),
+            "relative_path": str(relative_path or os.path.basename(torrent_path)),
+        })
     return {
         "id": _new_id(),
         "name": _clean_text(name, 300) or "New file",
@@ -373,6 +399,10 @@ def new_project():
         "items": [],
         "collections": [],
         "publishing": {"package_url": "", "release_notes": ""},
+        "torrent": {
+            "root_path": "", "trackers": [], "web_seeds": [],
+            "private": False, "comment": "", "piece_size": 0,
+        },
     }
 
 
@@ -392,6 +422,14 @@ def _normalize_artifact(value):
             url = _portable_url(source.get("url"))
             if url:
                 sources.append({"type": "https", "url": url})
+        elif kind == "torrent":
+            path = _clean_text(source.get("source_path"), 32768)
+            relative = _safe_member_name(source.get("relative_path"))
+            if path and relative:
+                sources.append({
+                    "type": "torrent", "source_path": path,
+                    "relative_path": relative,
+                })
     try:
         size = int(value["size"]) if value.get("size") not in {None, ""} else None
     except (TypeError, ValueError):
@@ -444,6 +482,7 @@ def normalize_project(value):
     license_value = library_value.get("license") if isinstance(library_value.get("license"), dict) else {}
     update_value = library_value.get("update") if isinstance(library_value.get("update"), dict) else {}
     publishing = value.get("publishing") if isinstance(value.get("publishing"), dict) else {}
+    torrent = value.get("torrent") if isinstance(value.get("torrent"), dict) else {}
     try:
         revision = max(1, int(library_value.get("revision") or 1))
     except (TypeError, ValueError):
@@ -485,6 +524,15 @@ def normalize_project(value):
             "package_url": _portable_url(publishing.get("package_url")),
             "release_notes": _clean_text(publishing.get("release_notes"), 20_000),
         },
+        "torrent": {
+            "root_path": _clean_text(torrent.get("root_path"), 32768),
+            "trackers": _string_list(torrent.get("trackers"), maximum=50, item_limit=4096),
+            "web_seeds": _string_list(torrent.get("web_seeds"), maximum=50, item_limit=4096),
+            "private": bool(torrent.get("private", False)),
+            "comment": _clean_text(torrent.get("comment"), 1000),
+            "piece_size": max(0, int(torrent.get("piece_size") or 0))
+            if str(torrent.get("piece_size") or "0").isdigit() else 0,
+        },
     }
     for raw in (value.get("collections") or []):
         if not isinstance(raw, dict):
@@ -511,8 +559,10 @@ def _relativize_project(project, project_path):
             item["artwork_path"] = _portable_source(item["artwork_path"], project_path)
         for artifact in item["artifacts"]:
             for source in artifact["sources"]:
-                if source["type"] == "embedded":
+                if source["type"] in {"embedded", "torrent"}:
                     source["source_path"] = _portable_source(source["source_path"], project_path)
+    if result["torrent"].get("root_path"):
+        result["torrent"]["root_path"] = _portable_source(result["torrent"]["root_path"], project_path)
     return result
 
 
@@ -635,10 +685,11 @@ def validate_project(project, project_path=None):
                 issues.append(ValidationIssue("error", artifact_location, "The artifact ID is duplicated."))
             artifact_ids.add(artifact["id"])
             if not artifact["sources"]:
-                issues.append(ValidationIssue("error", artifact_location, "At least one embedded or HTTPS source is required."))
+                issues.append(ValidationIssue("error", artifact_location, "At least one bundled, HTTPS, or torrent source is required."))
             if len(artifact["sources"]) > MAX_SOURCES_PER_ARTIFACT:
                 issues.append(ValidationIssue("error", artifact_location, f"A file can contain at most {MAX_SOURCES_PER_ARTIFACT} sources."))
             embedded_count = 0
+            torrent_count = 0
             for source in artifact["sources"]:
                 if source["type"] == "embedded":
                     embedded_count += 1
@@ -653,14 +704,24 @@ def validate_project(project, project_path=None):
                                 issues.append(ValidationIssue("error", artifact_location, "Embedded file exceeds the 128 GiB member limit."))
                         except OSError as exc:
                             issues.append(ValidationIssue("error", artifact_location, str(exc)))
+                elif source["type"] == "torrent":
+                    torrent_count += 1
+                    resolved = _resolve_source(source.get("source_path"), project_path)
+                    relative = _safe_member_name(source.get("relative_path"))
+                    if not relative:
+                        issues.append(ValidationIssue("error", artifact_location, "The torrent file path is unsafe."))
+                    if not os.path.isfile(resolved):
+                        issues.append(ValidationIssue("error", artifact_location, f"Torrent source file was not found: {source.get('source_path', '')}"))
                 elif not _https_url(source.get("url")):
                     issues.append(ValidationIssue("error", artifact_location, "Online sources must use valid HTTPS URLs."))
             if embedded_count > 1:
                 issues.append(ValidationIssue("error", artifact_location, "An artifact can contain at most one embedded source."))
+            if torrent_count > 1:
+                issues.append(ValidationIssue("error", artifact_location, "An artifact can contain at most one torrent source."))
             checksum = artifact.get("sha256") or ""
             if checksum and not _SHA256_RE.fullmatch(checksum):
                 issues.append(ValidationIssue("error", artifact_location, "The expected SHA-256 checksum is malformed."))
-            elif not embedded_count and not checksum:
+            elif not embedded_count and not torrent_count and not checksum:
                 issues.append(ValidationIssue("warning", artifact_location, "The online-only file has no SHA-256 checksum."))
             if artifact.get("size") is not None and artifact["size"] < 0:
                 issues.append(ValidationIssue("error", artifact_location, "The expected file size cannot be negative."))
@@ -679,6 +740,38 @@ def validate_project(project, project_path=None):
         issues.append(ValidationIssue("error", "Publishing", "The package download URL must use HTTPS."))
     if library["update"].get("feed_url") and not package_url:
         issues.append(ValidationIssue("warning", "Publishing", "An update feed is declared, but no package download URL is set for feed generation."))
+    torrent_sources = [
+        source for item in project["items"] for artifact in item["artifacts"]
+        for source in artifact["sources"] if source["type"] == "torrent"
+    ]
+    torrent = project["torrent"]
+    if torrent_sources:
+        root_value = torrent.get("root_path")
+        root_path = _resolve_source(root_value, project_path) if root_value else ""
+        if not root_path or not os.path.isdir(root_path):
+            issues.append(ValidationIssue("error", "Torrent sharing", "Choose the source folder used to create the torrent."))
+        else:
+            for source in torrent_sources:
+                source_path = _resolve_source(source.get("source_path"), project_path)
+                relative = source.get("relative_path") or ""
+                expected = os.path.abspath(os.path.join(root_path, *PurePosixPath(relative).parts))
+                try:
+                    inside = os.path.normcase(os.path.commonpath((root_path, source_path))) == os.path.normcase(root_path)
+                except ValueError:
+                    inside = False
+                if not inside or os.path.normcase(source_path) != os.path.normcase(expected):
+                    issues.append(ValidationIssue("error", "Torrent sharing", f"A selected file does not match the source folder: {relative}"))
+        for tracker in torrent.get("trackers") or []:
+            if not _tracker_url(tracker):
+                issues.append(ValidationIssue("error", "Torrent sharing", f"Tracker must use HTTP, HTTPS, or UDP: {tracker}"))
+        for seed in torrent.get("web_seeds") or []:
+            if not _web_seed_url(seed):
+                issues.append(ValidationIssue("error", "Torrent sharing", f"Web seed must use HTTP or HTTPS: {seed}"))
+        if torrent.get("private") and not torrent.get("trackers"):
+            issues.append(ValidationIssue(
+                "error", "Torrent sharing",
+                "A private torrent needs at least one tracker because DHT peer discovery is disabled.",
+            ))
     if not project["items"]:
         issues.append(ValidationIssue("warning", "Library", "The library does not contain any files yet."))
     if total_embedded_bytes > MAX_TOTAL_BYTES:
@@ -740,11 +833,68 @@ def build_library(project, destination, *, project_path=None):
         source_paths.extend(
             _resolve_source(source["source_path"], project_path)
             for artifact in item["artifacts"] for source in artifact["sources"]
-            if source["type"] == "embedded"
+            if source["type"] in {"embedded", "torrent"}
         )
     if any(os.path.normcase(path) == os.path.normcase(destination) for path in source_paths):
         raise OdrLibError("The output package cannot overwrite one of its own source files.")
     os.makedirs(os.path.dirname(destination), exist_ok=True)
+    torrent_records = []
+    for item in project["items"]:
+        for artifact in item["artifacts"]:
+            for source in artifact["sources"]:
+                if source["type"] == "torrent":
+                    source_path = _resolve_source(source["source_path"], project_path)
+                    before = os.stat(source_path)
+                    sha256 = _sha256_file(source_path)
+                    after = os.stat(source_path)
+                    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                        raise OdrLibError(f"A torrent source changed while it was being hashed: {source['relative_path']}")
+                    torrent_records.append({
+                        "artifact_id": artifact["id"],
+                        "source_path": source_path,
+                        "relative_path": source["relative_path"],
+                        "size": after.st_size,
+                        "mtime_ns": after.st_mtime_ns,
+                        "sha256": sha256,
+                    })
+    torrent_data = None
+    torrent_metadata = None
+    torrent_id = None
+    if torrent_records:
+        from core.torrent_support import create_metainfo, inspect_metainfo, TorrentSupportError
+        torrent_root = _resolve_source(project["torrent"]["root_path"], project_path)
+        try:
+            torrent_data = create_metainfo(
+                torrent_root,
+                torrent_records,
+                trackers=project["torrent"].get("trackers") or (),
+                web_seeds=project["torrent"].get("web_seeds") or (),
+                private=project["torrent"].get("private", False),
+                creator=f"{CREATOR_NAME} {CREATOR_VERSION}",
+                comment=project["torrent"].get("comment") or project["library"]["name"],
+                piece_size=project["torrent"].get("piece_size") or 0,
+            )
+            torrent_metadata = inspect_metainfo(torrent_data)
+        except TorrentSupportError as exc:
+            raise OdrLibError(str(exc)) from exc
+        if len(torrent_data) > MAX_TORRENT_BYTES:
+            raise OdrLibError("The generated torrent metadata exceeds the 32 MiB T1 limit.")
+        for record in torrent_records:
+            current = os.stat(record["source_path"])
+            if (current.st_size, current.st_mtime_ns) != (record["size"], record["mtime_ns"]):
+                raise OdrLibError(f"A torrent source changed while the torrent was being built: {record['relative_path']}")
+        if len(torrent_metadata["files"]) != len(torrent_records):
+            raise OdrLibError("The generated torrent file map is incomplete.")
+        torrent_id = _new_id()
+        for record, metainfo_file in zip(torrent_records, torrent_metadata["files"]):
+            record.update({
+                "torrent_id": torrent_id,
+                "file_index": metainfo_file["file_index"],
+                "torrent_path": metainfo_file["path"],
+            })
+        torrent_by_artifact = {record["artifact_id"]: record for record in torrent_records}
+    else:
+        torrent_by_artifact = {}
     fd, temporary = tempfile.mkstemp(prefix=".odrlib-build-", suffix=".tmp", dir=os.path.dirname(destination))
     os.close(fd)
     created_at = _now_iso()
@@ -789,14 +939,30 @@ def build_library(project, destination, *, project_path=None):
                                 "type": "embedded", "path": member_path,
                                 "size": embedded_record["size"], "sha256": embedded_record["sha256"],
                             })
-                        else:
+                        elif source["type"] == "https":
                             exported_sources.append({"type": "https", "url": source["url"]})
+                        else:
+                            torrent_record = torrent_by_artifact[artifact["id"]]
+                            exported_sources.append({
+                                "type": "torrent",
+                                "torrent_id": torrent_record["torrent_id"],
+                                "file_index": torrent_record["file_index"],
+                                "path": torrent_record["torrent_path"],
+                                "size": torrent_record["size"],
+                                "sha256": torrent_record["sha256"],
+                            })
                     exported_artifact["sources"] = exported_sources
                     if embedded_record:
                         exported_artifact["size"] = embedded_record["size"]
                         exported_artifact["sha256"] = embedded_record["sha256"]
                         if not exported_artifact.get("filename"):
                             exported_artifact["filename"] = os.path.basename(embedded_record["path"])
+                    elif artifact["id"] in torrent_by_artifact:
+                        torrent_record = torrent_by_artifact[artifact["id"]]
+                        exported_artifact["size"] = torrent_record["size"]
+                        exported_artifact["sha256"] = torrent_record["sha256"]
+                        if not exported_artifact.get("filename"):
+                            exported_artifact["filename"] = os.path.basename(torrent_record["torrent_path"])
                     if not exported_artifact.get("media_type"):
                         guessed, _encoding = mimetypes.guess_type(exported_artifact.get("filename") or "")
                         exported_artifact["media_type"] = guessed or "application/octet-stream"
@@ -814,6 +980,38 @@ def build_library(project, destination, *, project_path=None):
                 _write_bytes(archive, ITEMS_NAME, "catalog", items_data),
                 _write_bytes(archive, COLLECTIONS_NAME, "catalog", collections_data),
             ))
+            if torrent_data is not None:
+                members.append(_write_bytes(
+                    archive, TORRENT_METAINFO_NAME, "torrent", torrent_data,
+                    compression=zipfile.ZIP_STORED,
+                ))
+                t1_document = {
+                    "schema_version": 1,
+                    "torrents": [{
+                        "id": torrent_id,
+                        "metainfo_path": TORRENT_METAINFO_NAME,
+                        "name": torrent_metadata["name"],
+                        "info_hash_v1": torrent_metadata["info_hash_v1"],
+                        "info_hash_v2": torrent_metadata["info_hash_v2"],
+                        "private": torrent_metadata["private"],
+                        "piece_length": torrent_metadata["piece_length"],
+                        "trackers": torrent_metadata["trackers"],
+                        "web_seeds": torrent_metadata["web_seeds"],
+                        "files": [
+                            {
+                                "artifact_id": record["artifact_id"],
+                                "file_index": record["file_index"],
+                                "path": record["torrent_path"],
+                                "size": record["size"],
+                                "sha256": record["sha256"],
+                            }
+                            for record in torrent_records
+                        ],
+                    }],
+                }
+                members.append(_write_bytes(
+                    archive, TORRENT_EXTENSION_NAME, "extension", _json_bytes(t1_document)
+                ))
             embedded_bytes = sum(member["size"] for member in members if member["role"] == "payload")
             artifact_count = sum(len(item["artifacts"]) for item in exported_items)
             online_sources = sum(
@@ -835,6 +1033,16 @@ def build_library(project, destination, *, project_path=None):
                 extensions["optional"].append({
                     "id": UPDATE_EXTENSION_ID,
                     "version": UPDATE_EXTENSION_VERSION,
+                })
+            if torrent_records:
+                torrent_required = any(
+                    any(source["type"] == "torrent" for source in artifact["sources"])
+                    and not any(source["type"] in {"embedded", "https"} for source in artifact["sources"])
+                    for item in project["items"] for artifact in item["artifacts"]
+                )
+                extensions["required" if torrent_required else "optional"].append({
+                    "id": TORRENT_EXTENSION_ID,
+                    "version": TORRENT_EXTENSION_VERSION,
                 })
             manifest = {
                 "format": FORMAT_ID,
@@ -880,6 +1088,21 @@ def build_library(project, destination, *, project_path=None):
             package, destination, feed_path, package_url,
             project["publishing"].get("release_notes", ""), package_sha=package_sha,
         )
+    torrent_path = None
+    if torrent_data is not None:
+        torrent_path = os.path.splitext(destination)[0] + ".torrent"
+        fd, temporary_torrent = tempfile.mkstemp(
+            prefix=".torrent-build-", suffix=".tmp", dir=os.path.dirname(destination)
+        )
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(torrent_data)
+            os.replace(temporary_torrent, torrent_path)
+        finally:
+            try:
+                os.remove(temporary_torrent)
+            except FileNotFoundError:
+                pass
     return BuildResult(
         path=destination,
         size=os.path.getsize(destination),
@@ -887,6 +1110,7 @@ def build_library(project, destination, *, project_path=None):
         package=package,
         warnings=tuple(issue for issue in issues if issue.level == "warning"),
         feed_path=feed_path,
+        torrent_path=torrent_path,
     )
 
 
@@ -1014,6 +1238,65 @@ def inspect_library(path, *, verify_hashes=True):
         library = library_doc["library"]
         items = items_doc["items"]
         collections = collections_doc["collections"]
+        t1_enabled = any(
+            extension.id == TORRENT_EXTENSION_ID and extension.version == TORRENT_EXTENSION_VERSION
+            for extension in extensions
+        )
+        torrent_file_map = {}
+        torrent_ids = set()
+        if t1_enabled:
+            if (declared_by_path.get(TORRENT_EXTENSION_NAME) or {}).get("role") != "extension":
+                raise OdrLibError("T1 is declared but its extension document is missing.")
+            t1_document = _read_json_member(archive, TORRENT_EXTENSION_NAME, MAX_CATALOG_BYTES)
+            if not isinstance(t1_document, dict) or t1_document.get("schema_version") != 1:
+                raise OdrLibError("The T1 extension document uses an unsupported schema.")
+            torrents = t1_document.get("torrents")
+            if not isinstance(torrents, list) or not torrents or len(torrents) > 32:
+                raise OdrLibError("The T1 torrent declaration is invalid.")
+            from core.torrent_support import inspect_metainfo, TorrentSupportError
+            for torrent in torrents:
+                if not isinstance(torrent, dict):
+                    raise OdrLibError("A T1 torrent declaration is invalid.")
+                torrent_id = _valid_uuid(torrent.get("id"))
+                member_path = _safe_member_name(torrent.get("metainfo_path"))
+                if not torrent_id or torrent_id in torrent_ids:
+                    raise OdrLibError("A T1 torrent ID is invalid or duplicated.")
+                torrent_ids.add(torrent_id)
+                record = declared_by_path.get(member_path)
+                if not record or record["role"] != "torrent" or record["size"] > MAX_TORRENT_BYTES:
+                    raise OdrLibError("A T1 torrent references missing or oversized metadata.")
+                try:
+                    metainfo = inspect_metainfo(archive.read(member_path))
+                except TorrentSupportError as exc:
+                    raise OdrLibError(str(exc)) from exc
+                for key in ("name", "info_hash_v1", "info_hash_v2", "private", "piece_length"):
+                    if torrent.get(key) != metainfo.get(key):
+                        raise OdrLibError(f"T1 metadata does not match its torrent: {key}")
+                if torrent.get("trackers") != metainfo.get("trackers"):
+                    raise OdrLibError("T1 tracker tiers do not match the embedded torrent.")
+                if torrent.get("web_seeds") != metainfo.get("web_seeds"):
+                    raise OdrLibError("T1 web seeds do not match the embedded torrent.")
+                declared_files = torrent.get("files")
+                if not isinstance(declared_files, list) or len(declared_files) != len(metainfo["files"]):
+                    raise OdrLibError("The T1 file map is incomplete.")
+                for expected, actual in zip(declared_files, metainfo["files"]):
+                    if not isinstance(expected, dict):
+                        raise OdrLibError("A T1 file record is invalid.")
+                    artifact_id = _valid_uuid(expected.get("artifact_id"))
+                    sha256 = str(expected.get("sha256") or "").casefold()
+                    if (
+                            not artifact_id or not _SHA256_RE.fullmatch(sha256)
+                            or expected.get("file_index") != actual["file_index"]
+                            or expected.get("path") != actual["path"]
+                            or expected.get("size") != actual["size"]):
+                        raise OdrLibError("A T1 file record does not match its torrent metadata.")
+                    key = (torrent_id, actual["file_index"])
+                    if key in torrent_file_map:
+                        raise OdrLibError("The T1 file map contains a duplicate index.")
+                    torrent_file_map[key] = {
+                        **expected, "torrent_id": torrent_id,
+                        "metainfo_path": member_path,
+                    }
         if len(items) > MAX_ITEMS or len(collections) > MAX_COLLECTIONS:
             raise OdrLibError("The package catalog exceeds the supported item limits.")
         manifest_library = manifest.get("library")
@@ -1043,6 +1326,8 @@ def inspect_library(path, *, verify_hashes=True):
         artifact_count = 0
         embedded_bytes = 0
         online_sources = 0
+        used_torrent_files = set()
+        torrent_only_dependency = False
         for item in items:
             if not isinstance(item, dict) or not _valid_uuid(item.get("id")) or not _clean_text(item.get("title"), 300):
                 raise OdrLibError("The package contains an invalid catalog item.")
@@ -1074,6 +1359,7 @@ def inspect_library(path, *, verify_hashes=True):
                 sources = artifact.get("sources")
                 if not isinstance(sources, list) or not sources or len(sources) > MAX_SOURCES_PER_ARTIFACT:
                     raise OdrLibError("An artifact has an invalid source list.")
+                recognized_source_count = 0
                 for source in sources:
                     if not isinstance(source, dict):
                         raise OdrLibError("An artifact source is invalid.")
@@ -1085,10 +1371,57 @@ def inspect_library(path, *, verify_hashes=True):
                         if source.get("size") != record["size"] or source.get("sha256") != record["sha256"]:
                             raise OdrLibError("An embedded artifact's integrity metadata does not match its payload.")
                         embedded_bytes += record["size"]
+                        recognized_source_count += 1
                     elif source.get("type") == "https" and _https_url(source.get("url")):
                         online_sources += 1
+                        recognized_source_count += 1
+                    elif source.get("type") == "torrent" and t1_enabled:
+                        torrent_id = _valid_uuid(source.get("torrent_id"))
+                        try:
+                            file_index = int(source.get("file_index"))
+                        except (TypeError, ValueError):
+                            raise OdrLibError("A T1 source has an invalid file index.")
+                        mapped = torrent_file_map.get((torrent_id, file_index))
+                        if (
+                                not mapped or mapped["artifact_id"] != artifact_id
+                                or source.get("path") != mapped["path"]
+                                or source.get("size") != mapped["size"]
+                                or source.get("sha256") != mapped["sha256"]):
+                            raise OdrLibError("A T1 source does not match the extension file map.")
+                        # Runtime-only convenience retained in the inspected catalog;
+                        # the portable source still derives authority from T1.json.
+                        source["metainfo_path"] = mapped["metainfo_path"]
+                        used_torrent_files.add((torrent_id, file_index))
+                        recognized_source_count += 1
+                    elif source.get("type") == "torrent" and any(
+                            extension.id == TORRENT_EXTENSION_ID and not extension.required
+                            for extension in extensions):
+                        # A future optional T version is safely ignored when a
+                        # recognized fallback keeps the artifact obtainable.
+                        continue
                     else:
                         raise OdrLibError("An artifact uses an unsupported or unsafe source.")
+                if not recognized_source_count:
+                    raise OdrLibError("An artifact has no source supported by this ODeR version.")
+                if not t1_enabled and any(
+                        extension.id == TORRENT_EXTENSION_ID and not extension.required
+                        for extension in extensions):
+                    artifact["sources"] = [
+                        source for source in sources if source.get("type") != "torrent"
+                    ]
+                if (
+                        any(source.get("type") == "torrent" for source in sources)
+                        and not any(source.get("type") in {"embedded", "https"} for source in sources)):
+                    torrent_only_dependency = True
+        if t1_enabled:
+            if used_torrent_files != set(torrent_file_map):
+                raise OdrLibError("The T1 file map contains an unreferenced or missing catalog source.")
+            t1_declaration = next(
+                extension for extension in extensions
+                if extension.id == TORRENT_EXTENSION_ID and extension.version == TORRENT_EXTENSION_VERSION
+            )
+            if torrent_only_dependency and not t1_declaration.required:
+                raise OdrLibError("T1 must be required when a catalog file has no bundled or HTTPS fallback.")
         collection_ids = set()
         for collection in collections:
             if not isinstance(collection, dict) or not _valid_uuid(collection.get("id")) or not _clean_text(collection.get("name"), 300):
@@ -1239,33 +1572,107 @@ def inspect_update_feed(value):
     )
 
 
-def import_folder(project, folder):
-    """Add each file below a folder as one embedded catalog item."""
+def scan_folder(folder):
+    """Return a stable recursive file list for Creator's import checklist."""
+    folder = os.path.abspath(folder)
+    if not os.path.isdir(folder):
+        raise OdrLibError("Choose an existing folder to import.")
+    records = []
+    for root, directories, files in os.walk(folder, followlinks=False):
+        directories[:] = sorted(
+            (name for name in directories if not os.path.islink(os.path.join(root, name))),
+            key=str.casefold,
+        )
+        files.sort(key=str.casefold)
+        for filename in files:
+            source_path = os.path.join(root, filename)
+            if os.path.islink(source_path) or not os.path.isfile(source_path):
+                continue
+            relative = os.path.relpath(source_path, folder).replace("\\", "/")
+            if not _safe_member_name(relative):
+                continue
+            try:
+                size = os.path.getsize(source_path)
+            except OSError:
+                continue
+            records.append({
+                "source_path": source_path,
+                "relative_path": relative,
+                "size": size,
+                "include": True,
+                "bundle": False,
+                "torrent": True,
+            })
+            if len(records) >= MAX_ITEMS:
+                return records
+    return records
+
+
+def import_folder_selection(project, folder, records, *, project_path=None):
+    """Add the checked folder files, preserving their relative folder layout."""
     project = normalize_project(project)
     folder = os.path.abspath(folder)
     if not os.path.isdir(folder):
         raise OdrLibError("Choose an existing folder to import.")
+    selected = [record for record in records if record.get("include")]
+    if any(record.get("torrent") for record in selected):
+        existing_torrent_sources = any(
+            source["type"] == "torrent"
+            for item in project["items"] for artifact in item["artifacts"]
+            for source in artifact["sources"]
+        )
+        existing_root = project["torrent"].get("root_path")
+        if existing_torrent_sources and existing_root:
+            resolved_root = _resolve_source(existing_root, project_path)
+            if os.path.normcase(resolved_root) != os.path.normcase(folder):
+                raise OdrLibError(
+                    "T1 currently creates one torrent per library. Import files from the same source folder, "
+                    "or remove the existing torrent sources first."
+                )
+        project["torrent"]["root_path"] = folder
     collection_by_rel = {collection["name"]: collection for collection in project["collections"]}
     added = 0
-    for root, directories, files in os.walk(folder):
-        directories.sort(key=str.casefold)
-        files.sort(key=str.casefold)
-        for filename in files:
-            source_path = os.path.join(root, filename)
-            item = new_item(title=os.path.splitext(filename)[0] or filename)
-            item["category"] = "Software" if os.path.splitext(filename)[1].casefold() in {".exe", ".msi", ".zip", ".7z", ".rar"} else ""
-            item["artifacts"].append(new_artifact(name=filename, embedded_path=source_path))
-            project["items"].append(item)
-            relative_parent = os.path.relpath(root, folder)
-            if relative_parent != ".":
-                collection_name = relative_parent.replace("\\", " / ").replace("/", " / ")
-                collection = collection_by_rel.get(collection_name)
-                if collection is None:
-                    collection = new_collection(name=collection_name)
-                    collection_by_rel[collection_name] = collection
-                    project["collections"].append(collection)
-                collection["item_ids"].append(item["id"])
-            added += 1
-            if len(project["items"]) >= MAX_ITEMS:
-                return project, added
+    for record in selected:
+        relative = _safe_member_name(record.get("relative_path"))
+        if not relative:
+            raise OdrLibError("A selected folder entry has an unsafe relative path.")
+        source_path = os.path.abspath(str(record.get("source_path") or ""))
+        expected = os.path.abspath(os.path.join(folder, *PurePosixPath(relative).parts))
+        if os.path.normcase(source_path) != os.path.normcase(expected) or not os.path.isfile(source_path):
+            raise OdrLibError(f"A selected file moved or changed before import: {relative}")
+        filename = os.path.basename(source_path)
+        item = new_item(title=os.path.splitext(filename)[0] or filename)
+        item["category"] = "Software" if os.path.splitext(filename)[1].casefold() in {".exe", ".msi", ".zip", ".7z", ".rar"} else ""
+        artifact = new_artifact(name=filename)
+        artifact["filename"] = filename
+        artifact["sources"] = []
+        if record.get("bundle"):
+            artifact["sources"].append({"type": "embedded", "source_path": source_path})
+        if record.get("torrent"):
+            artifact["sources"].append({
+                "type": "torrent", "source_path": source_path,
+                "relative_path": relative,
+            })
+        item["artifacts"].append(artifact)
+        project["items"].append(item)
+        relative_parent = PurePosixPath(relative).parent.as_posix()
+        if relative_parent != ".":
+            collection_name = relative_parent.replace("/", " / ")
+            collection = collection_by_rel.get(collection_name)
+            if collection is None:
+                collection = new_collection(name=collection_name)
+                collection_by_rel[collection_name] = collection
+                project["collections"].append(collection)
+            collection["item_ids"].append(item["id"])
+        added += 1
+        if len(project["items"]) >= MAX_ITEMS:
+            return project, added
     return project, added
+
+
+def import_folder(project, folder):
+    """Compatibility helper: import a folder as bundled files without T1."""
+    records = scan_folder(folder)
+    for record in records:
+        record.update({"bundle": True, "torrent": False})
+    return import_folder_selection(project, folder, records)

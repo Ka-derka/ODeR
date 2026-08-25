@@ -4,6 +4,22 @@ Notable changes to ODeR are recorded here.
 
 ## Unreleased
 
+## 1.1.0-alpha.3 — 2026-08-25
+
+- Implemented T1 torrent sources inside the stable `.odrlib` v1 extension model; U1 and T1 may be declared together without renaming the package format.
+- Added strict T1 validation across extension documents, embedded torrent metainfo, info hashes, file indices, safe paths, sizes, SHA-256 values, artifact mappings, and required-versus-optional declarations.
+- Added T1 downloads to ODeR's existing Downloads queue with selected-file priorities, structured destinations, partial-data restart support, progress, pause, retry, final size and SHA-256 verification, and no automatic download on import.
+- Added explicit torrent privacy and networking settings for DHT, local peer discovery, UPnP, NAT-PMP, peer limits, and transfer limits; completed jobs stop instead of silently continuing to seed.
+- Added Torrent labels and source selection to curated-library tabs while keeping bundled and HTTPS fallbacks available.
+- Fixed multi-file hybrid torrents being rejected when libtorrent inserted internal alignment files between catalog files.
+
+## 2026.0.2a — 2026-08-25
+
+- Added a recursive source-folder workflow with per-file Catalog, Bundle, and Torrent choices and preserved subfolder collections.
+- Added automatic hybrid torrent creation, tracker tiers, HTTPS web seeds, private-torrent mode, automatic or selected piece sizes, creator metadata, and standalone `.torrent` output beside each T1 `.odrlib`.
+- Made bundling opt-in during folder imports while torrent inclusion is selected by default, keeping shareable catalogs small unless the curator intentionally embeds payloads.
+- Added T1 project persistence, validation, generated size and SHA-256 metadata, extension badges, required-versus-optional fallback rules, and regression coverage.
+
 ## 1.1.0-alpha.2 — 2026-08-20
 
 - Added full `.odrlib` v1 import to the main ODeR browser with complete manifest, member, catalog, path, size, hash, capability, and package-layout validation before user data changes.

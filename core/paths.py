@@ -8,6 +8,9 @@ import os
 import sys
 
 
+DATA_DIR_OVERRIDE_ENV = "ODER_DATA_DIR_OVERRIDE"
+
+
 def app_root():
     """Directory containing the running exe (frozen) or source tree (dev)."""
     if getattr(sys, "frozen", False):
@@ -34,7 +37,10 @@ def is_portable():
 
 
 def data_dir():
-    if not getattr(sys, "frozen", False) or is_portable():
+    override = os.environ.get(DATA_DIR_OVERRIDE_ENV)
+    if override:
+        d = os.path.abspath(os.path.expanduser(override))
+    elif not getattr(sys, "frozen", False) or is_portable():
         d = os.path.join(app_root(), "data")
     elif sys.platform == "darwin":
         d = os.path.join(os.path.expanduser("~"), "Library", "Application Support", "ODeR")

@@ -1,7 +1,7 @@
 ; Inno Setup script for the separate ODeR Creator application.
 
 #define MyAppName "ODeR Creator"
-#define MyAppVersion "2026.0.1a"
+#define MyAppVersion "2026.0.2a"
 #define MyBuildExeName "ODeR Creator.exe"
 #define MyAppExeName "ODeR Creator.exe"
 

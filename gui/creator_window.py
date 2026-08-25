@@ -7,7 +7,7 @@ import os
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QComboBox, QDialog,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QFileDialog, QFormLayout, QFrame,
     QHBoxLayout, QLabel, QLineEdit, QListWidget,
     QMainWindow, QMenu, QMessageBox, QPlainTextEdit,
@@ -17,9 +17,9 @@ from PySide6.QtWidgets import (
 )
 
 from core.odrlib import (
-    OdrLibError, build_library, import_folder, load_project, new_artifact,
+    OdrLibError, build_library, import_folder_selection, load_project, new_artifact,
     new_collection, new_item, new_project, normalize_project, save_project,
-    validate_project,
+    scan_folder, validate_project,
 )
 from core.settings import load_settings
 from core.version import CREATOR_NAME, CREATOR_VERSION
@@ -111,8 +111,12 @@ class NewFileDialog(QDialog):
         self.folder.setCurrentIndex(max(0, folder_index))
         self.filename = QLineEdit()
         self.filename.setPlaceholderText("Displayed download filename")
-        self.embedded = PathPicker("Choose a file to bundle", "All files (*)")
+        self.embedded = PathPicker("Choose a local source file", "All files (*)")
         self.embedded.edit.textChanged.connect(self._embedded_changed)
+        self.bundle = QCheckBox("Bundle this file inside the .odrlib")
+        self.bundle.setChecked(False)
+        self.torrent = QCheckBox("Include this file in the generated T1 torrent")
+        self.torrent.setChecked(True)
         self.urls = QPlainTextEdit()
         self.urls.setPlaceholderText("One HTTPS URL per line\nhttps://example.org/download/file.zip")
         self.urls.setFixedHeight(90)
@@ -129,7 +133,9 @@ class NewFileDialog(QDialog):
         form.addRow("Name", self.name)
         form.addRow("Folder", self.folder)
         form.addRow("Filename", self.filename)
-        form.addRow("Embed local file", self.embedded)
+        form.addRow("Local source", self.embedded)
+        form.addRow("", self.bundle)
+        form.addRow("", self.torrent)
         form.addRow("HTTPS mirrors", self.urls)
         form.addRow("Media type", self.media_type)
         form.addRow("Platform", self.platform)
@@ -156,7 +162,10 @@ class NewFileDialog(QDialog):
             QMessageBox.warning(self, "File name needed", "Give this file a display name.")
             return
         if not self.embedded.text() and not _line_values(self.urls.toPlainText()):
-            QMessageBox.warning(self, "Source needed", "Choose an embedded file or enter at least one HTTPS source.")
+            QMessageBox.warning(self, "Source needed", "Choose a local file or enter at least one HTTPS source.")
+            return
+        if (self.bundle.isChecked() or self.torrent.isChecked()) and not self.embedded.text():
+            QMessageBox.warning(self, "Local file needed", "Choose a local file for bundling or torrent sharing.")
             return
         checksum = self.checksum.text().strip().casefold()
         if checksum and (len(checksum) != 64 or any(character not in "0123456789abcdef" for character in checksum)):
@@ -186,11 +195,113 @@ class NewFileDialog(QDialog):
             "sha256": self.checksum.text().strip().casefold(),
             "sources": [],
         })
-        if self.embedded.text():
+        if self.embedded.text() and self.bundle.isChecked():
             artifact["sources"].append({"type": "embedded", "source_path": self.embedded.text()})
+        if self.embedded.text() and self.torrent.isChecked():
+            artifact["sources"].append({
+                "type": "torrent", "source_path": self.embedded.text(),
+                "relative_path": os.path.basename(self.embedded.text()),
+            })
         artifact["sources"].extend({"type": "https", "url": url} for url in _line_values(self.urls.toPlainText()))
         item["artifacts"] = [artifact]
         return item, self.folder.currentData()
+
+
+class FolderImportDialog(QDialog):
+    """Let curators choose catalog, bundle, and torrent inclusion in one pass."""
+
+    def __init__(self, folder, records, parent=None):
+        super().__init__(parent)
+        self.folder = folder
+        self.records = [dict(record) for record in records]
+        self.setWindowTitle("Import folder into ODeR Creator")
+        self.resize(900, 650)
+        root = QVBoxLayout(self)
+        title = QLabel("Choose what the library will publish")
+        title.setObjectName("pageTitle")
+        root.addWidget(title)
+        hint = QLabel(
+            "Checked files become catalog entries. Torrent is selected by default; bundling is opt-in "
+            "because it makes the .odrlib itself larger. Folder structure is preserved."
+        )
+        hint.setObjectName("mutedLabel")
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+        path = QLabel(folder)
+        path.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        root.addWidget(path)
+        self.tree = QTreeWidget()
+        self.tree.setColumnCount(4)
+        self.tree.setHeaderLabels(("Include file", "Size", "Bundle", "Torrent"))
+        self.tree.setRootIsDecorated(False)
+        self.tree.setAlternatingRowColors(True)
+        for index, record in enumerate(self.records):
+            item = QTreeWidgetItem([
+                record["relative_path"], format_bytes(record["size"]), "", ""
+            ])
+            item.setData(0, Qt.UserRole, index)
+            item.setCheckState(0, Qt.Checked if record.get("include", True) else Qt.Unchecked)
+            item.setCheckState(2, Qt.Checked if record.get("bundle", False) else Qt.Unchecked)
+            item.setCheckState(3, Qt.Checked if record.get("torrent", True) else Qt.Unchecked)
+            self.tree.addTopLevelItem(item)
+        self.tree.setColumnWidth(0, 560)
+        self.tree.setColumnWidth(1, 100)
+        root.addWidget(self.tree, 1)
+        choices = QHBoxLayout()
+        all_button = QPushButton("Select all")
+        none_button = QPushButton("Select none")
+        bundle_button = QPushButton("Bundle selected")
+        torrent_button = QPushButton("Torrent selected")
+        all_button.clicked.connect(lambda: self._set_column(0, Qt.Checked))
+        none_button.clicked.connect(lambda: self._set_column(0, Qt.Unchecked))
+        bundle_button.clicked.connect(lambda: self._copy_selected_to(2))
+        torrent_button.clicked.connect(lambda: self._copy_selected_to(3))
+        choices.addWidget(all_button)
+        choices.addWidget(none_button)
+        choices.addStretch(1)
+        choices.addWidget(bundle_button)
+        choices.addWidget(torrent_button)
+        root.addLayout(choices)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("Add files")
+        buttons.accepted.connect(self._accept_checked)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+    def _set_column(self, column, state):
+        for index in range(self.tree.topLevelItemCount()):
+            self.tree.topLevelItem(index).setCheckState(column, state)
+
+    def _copy_selected_to(self, column):
+        for index in range(self.tree.topLevelItemCount()):
+            item = self.tree.topLevelItem(index)
+            item.setCheckState(column, item.checkState(0))
+
+    def _accept_checked(self):
+        selected = 0
+        for index in range(self.tree.topLevelItemCount()):
+            item = self.tree.topLevelItem(index)
+            if item.checkState(0) == Qt.Checked:
+                selected += 1
+                if item.checkState(2) != Qt.Checked and item.checkState(3) != Qt.Checked:
+                    QMessageBox.warning(
+                        self, "Choose a source",
+                        f"{item.text(0)} is selected but is neither bundled nor in the torrent.",
+                    )
+                    return
+        if not selected:
+            QMessageBox.information(self, "Nothing selected", "Select at least one file to add.")
+            return
+        self.accept()
+
+    def selections(self):
+        for index in range(self.tree.topLevelItemCount()):
+            item = self.tree.topLevelItem(index)
+            record = self.records[item.data(0, Qt.UserRole)]
+            record["include"] = item.checkState(0) == Qt.Checked
+            record["bundle"] = item.checkState(2) == Qt.Checked
+            record["torrent"] = item.checkState(3) == Qt.Checked
+        return self.records
 
 
 class CreatorWindow(QMainWindow):
@@ -424,8 +535,44 @@ class CreatorWindow(QMainWindow):
         publishing.addRow("Channel", self.update_channel)
         publishing.addRow("Package URL", self.package_url)
         publishing.addRow("Release notes", self.release_notes)
+
+        torrent = self._card_form(layout, "T1 torrent sharing")
+        self.torrent_root = QLineEdit()
+        self.torrent_root.setReadOnly(True)
+        # The standard picker selects files, so the recursive importer normally
+        # fills this field. A dedicated folder button remains available here.
+        self.torrent_root_button = QPushButton("Choose source folder…")
+        self.torrent_root_button.clicked.connect(self._choose_torrent_root)
+        self.torrent_trackers = QPlainTextEdit()
+        self.torrent_trackers.setPlaceholderText("One HTTP, HTTPS, or UDP tracker per line")
+        self.torrent_trackers.setFixedHeight(74)
+        self.torrent_web_seeds = QPlainTextEdit()
+        self.torrent_web_seeds.setPlaceholderText("Optional HTTP(S) web seed base URLs")
+        self.torrent_web_seeds.setFixedHeight(64)
+        self.torrent_private = QCheckBox("Private torrent (tracker-controlled peer discovery)")
+        self.torrent_piece_size = QComboBox()
+        for label, size in (("Automatic", 0), ("256 KiB", 256 * 1024), ("512 KiB", 512 * 1024),
+                            ("1 MiB", 1024 * 1024), ("2 MiB", 2 * 1024 * 1024),
+                            ("4 MiB", 4 * 1024 * 1024)):
+            self.torrent_piece_size.addItem(label, size)
+        self.torrent_comment = QLineEdit()
+        self.torrent_comment.setPlaceholderText("Optional torrent comment")
+        torrent.addRow("Source folder", self.torrent_root_button)
+        torrent.addRow("Current folder", self.torrent_root)
+        torrent.addRow("Trackers", self.torrent_trackers)
+        torrent.addRow("Web seeds", self.torrent_web_seeds)
+        torrent.addRow("", self.torrent_private)
+        torrent.addRow("Piece size", self.torrent_piece_size)
+        torrent.addRow("Comment", self.torrent_comment)
         layout.addStretch(1)
         return page
+
+    def _choose_torrent_root(self):
+        folder = QFileDialog.getExistingDirectory(
+            self, "Choose the T1 source folder", self.torrent_root.text()
+        )
+        if folder:
+            self.torrent_root.setText(folder)
 
     def _build_item_editor(self):
         page, layout = self._scroll_form(
@@ -469,7 +616,9 @@ class CreatorWindow(QMainWindow):
         source_form = self._card_form(layout, "Download source")
         self.file_filename = QLineEdit()
         self.file_filename.setPlaceholderText("Displayed download filename")
-        self.file_embedded = PathPicker("Choose a file to bundle", "All files (*)")
+        self.file_embedded = PathPicker("Choose a local source file", "All files (*)")
+        self.file_bundle = QCheckBox("Bundle this file inside the .odrlib")
+        self.file_torrent = QCheckBox("Include this file in the generated T1 torrent")
         self.file_urls = QPlainTextEdit()
         self.file_urls.setPlaceholderText("One HTTPS URL per line\nhttps://example.org/download/file.zip")
         self.file_urls.setFixedHeight(90)
@@ -484,7 +633,9 @@ class CreatorWindow(QMainWindow):
         self.file_variant_note.setWordWrap(True)
         self.file_variant_note.hide()
         source_form.addRow("Filename", self.file_filename)
-        source_form.addRow("Embed local file", self.file_embedded)
+        source_form.addRow("Local source", self.file_embedded)
+        source_form.addRow("", self.file_bundle)
+        source_form.addRow("", self.file_torrent)
         source_form.addRow("HTTPS mirrors", self.file_urls)
         source_form.addRow("Media type", self.file_media_type)
         source_form.addRow("Expected size", self.file_size)
@@ -626,6 +777,14 @@ class CreatorWindow(QMainWindow):
             _set_combo(self.update_channel, library["update"]["channel"])
             self.package_url.setText(self.project["publishing"]["package_url"])
             self.release_notes.setPlainText(self.project["publishing"]["release_notes"])
+            torrent = self.project["torrent"]
+            self.torrent_root.setText(torrent.get("root_path", ""))
+            self.torrent_trackers.setPlainText("\n".join(torrent.get("trackers") or []))
+            self.torrent_web_seeds.setPlainText("\n".join(torrent.get("web_seeds") or []))
+            self.torrent_private.setChecked(bool(torrent.get("private")))
+            piece_index = self.torrent_piece_size.findData(torrent.get("piece_size") or 0)
+            self.torrent_piece_size.setCurrentIndex(max(0, piece_index))
+            self.torrent_comment.setText(torrent.get("comment", ""))
             self.editors.setCurrentWidget(self.library_editor)
         elif kind == "file":
             item = self._find_item(identifier)
@@ -647,8 +806,11 @@ class CreatorWindow(QMainWindow):
                 self.item_license_url.setText(item["license"]["url"])
                 artifact = item["artifacts"][0] if item["artifacts"] else new_artifact(name=item["title"])
                 embedded = next((source for source in artifact["sources"] if source["type"] == "embedded"), None)
+                torrent = next((source for source in artifact["sources"] if source["type"] == "torrent"), None)
                 self.file_filename.setText(artifact.get("filename", ""))
-                self.file_embedded.setText((embedded or {}).get("source_path", ""))
+                self.file_embedded.setText((embedded or torrent or {}).get("source_path", ""))
+                self.file_bundle.setChecked(bool(embedded))
+                self.file_torrent.setChecked(bool(torrent))
                 self.file_urls.setPlainText("\n".join(
                     source.get("url", "") for source in artifact["sources"] if source["type"] == "https"
                 ))
@@ -699,6 +861,14 @@ class CreatorWindow(QMainWindow):
                 "package_url": self.package_url.text().strip(),
                 "release_notes": self.release_notes.toPlainText().strip(),
             }
+            self.project["torrent"] = {
+                "root_path": self.torrent_root.text(),
+                "trackers": _line_values(self.torrent_trackers.toPlainText()),
+                "web_seeds": _line_values(self.torrent_web_seeds.toPlainText()),
+                "private": self.torrent_private.isChecked(),
+                "comment": self.torrent_comment.text().strip(),
+                "piece_size": self.torrent_piece_size.currentData() or 0,
+            }
         elif kind == "file":
             item = self._find_item(identifier)
             if item:
@@ -731,8 +901,24 @@ class CreatorWindow(QMainWindow):
                     "sha256": self.file_checksum.text().strip().casefold(),
                     "sources": [],
                 })
-                if self.file_embedded.text():
+                if self.file_embedded.text() and self.file_bundle.isChecked():
                     artifact["sources"].append({"type": "embedded", "source_path": self.file_embedded.text()})
+                if self.file_embedded.text() and self.file_torrent.isChecked():
+                    root = self.project["torrent"].get("root_path")
+                    if not root:
+                        root = os.path.dirname(os.path.abspath(self.file_embedded.text()))
+                        self.project["torrent"]["root_path"] = root
+                    resolved_root = root
+                    if not os.path.isabs(resolved_root) and self.project_path:
+                        resolved_root = os.path.join(os.path.dirname(self.project_path), resolved_root)
+                    try:
+                        relative = os.path.relpath(os.path.abspath(self.file_embedded.text()), resolved_root)
+                    except ValueError:
+                        relative = os.path.basename(self.file_embedded.text())
+                    artifact["sources"].append({
+                        "type": "torrent", "source_path": self.file_embedded.text(),
+                        "relative_path": relative.replace("\\", "/"),
+                    })
                 artifact["sources"].extend(
                     {"type": "https", "url": url} for url in _line_values(self.file_urls.toPlainText())
                 )
@@ -784,6 +970,22 @@ class CreatorWindow(QMainWindow):
         if dialog.exec() != QDialog.Accepted:
             return
         item, folder_id = dialog.result_data()
+        for source in item["artifacts"][0]["sources"]:
+            if source["type"] != "torrent":
+                continue
+            root = self.project["torrent"].get("root_path")
+            if not root:
+                root = os.path.dirname(os.path.abspath(source["source_path"]))
+                self.project["torrent"]["root_path"] = root
+            resolved_root = root
+            if not os.path.isabs(resolved_root) and self.project_path:
+                resolved_root = os.path.join(os.path.dirname(self.project_path), resolved_root)
+            try:
+                source["relative_path"] = os.path.relpath(
+                    os.path.abspath(source["source_path"]), resolved_root
+                ).replace("\\", "/")
+            except ValueError:
+                pass
         self.project["items"].append(item)
         self._assign_item_folder(item["id"], folder_id)
         self._set_dirty(True)
@@ -819,19 +1021,30 @@ class CreatorWindow(QMainWindow):
             return
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            project, added = import_folder(self.project, folder)
+            records = scan_folder(folder)
         except OdrLibError as exc:
             QMessageBox.warning(self, "Folder not imported", str(exc))
             return
         finally:
             QApplication.restoreOverrideCursor()
+        if not records:
+            QMessageBox.information(self, "Nothing imported", "The selected folder does not contain any files.")
+            return
+        dialog = FolderImportDialog(folder, records, self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        try:
+            project, added = import_folder_selection(
+                self.project, folder, dialog.selections(), project_path=self.project_path
+            )
+        except OdrLibError as exc:
+            QMessageBox.warning(self, "Folder not imported", str(exc))
+            return
         self.project = project
         if added:
             self._set_dirty(True)
             self._rebuild_tree(("library", None))
             self.statusBar().showMessage(f"Imported {format_number(added)} files from {folder}", 8000)
-        else:
-            QMessageBox.information(self, "Nothing imported", "The selected folder does not contain any files.")
 
     def _update_preview(self):
         library = self.project["library"]
@@ -856,12 +1069,21 @@ class CreatorWindow(QMainWindow):
             1 for item in self.project["items"] for artifact in item["artifacts"]
             if any(source["type"] == "embedded" for source in artifact["sources"])
         )
-        extensions = "U1" if (library.get("update") or {}).get("feed_url") else "Core only"
+        extension_badges = []
+        if (library.get("update") or {}).get("feed_url"):
+            extension_badges.append("U1")
+        torrent_count = sum(
+            1 for item in self.project["items"] for artifact in item["artifacts"]
+            if any(source["type"] == "torrent" for source in artifact["sources"])
+        )
+        if torrent_count:
+            extension_badges.append("T1")
+        extensions = " · ".join(extension_badges) or "Core only"
         self.preview_meta.setText(
             f"Version {preview_version or '—'} · revision {preview_revision}\n"
             f"{format_number(len(self.project['items']))} files · {format_number(len(self.project['collections']))} folders\n"
             f"{format_number(artifacts)} source variants · {format_number(embedded)} bundled\n"
-            f"Extensions: {extensions}"
+            f"{format_number(torrent_count)} torrent files · Extensions: {extensions}"
         )
 
     def validate_current_project(self):
@@ -915,6 +1137,8 @@ class CreatorWindow(QMainWindow):
         )
         if result.feed_path:
             message += f"\n\nUpdate feed: {os.path.basename(result.feed_path)}"
+        if result.torrent_path:
+            message += f"\nTorrent: {os.path.basename(result.torrent_path)}"
         QMessageBox.information(self, "ODeR Library built", message)
         self.statusBar().showMessage(f"Built {result.path}", 10000)
 

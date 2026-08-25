@@ -5,7 +5,8 @@ import unittest
 import zipfile
 
 from core.odrlib import (
-    MANIFEST_NAME, UPDATE_EXTENSION_ID, OdrLibError, build_library, import_folder, inspect_library,
+    MANIFEST_NAME, UPDATE_EXTENSION_ID, OdrLibError, build_library, import_folder,
+    import_folder_selection, inspect_library, scan_folder,
     inspect_update_feed,
     load_project, new_artifact, new_collection, new_item, new_project,
     save_project, validate_project,
@@ -140,10 +141,86 @@ class OdrLibTests(unittest.TestCase):
             self._rewrite_manifest(
                 source,
                 required,
-                lambda manifest: manifest["extensions"]["required"].append({"id": "T", "version": 1}),
+                lambda manifest: manifest["extensions"]["required"].append({"id": "Z", "version": 1}),
             )
-            with self.assertRaisesRegex(OdrLibError, "unsupported extension T1"):
+            with self.assertRaisesRegex(OdrLibError, "unsupported extension Z1"):
                 inspect_library(required)
+
+    def test_t1_folder_selection_builds_embedded_torrent_and_standalone_file(self):
+        with tempfile.TemporaryDirectory() as root:
+            nested = os.path.join(root, "Media")
+            os.makedirs(nested)
+            payload = os.path.join(nested, "episode.bin")
+            with open(payload, "wb") as handle:
+                handle.write(b"T1 payload" * 1000)
+            records = scan_folder(root)
+            self.assertEqual([record["relative_path"] for record in records], ["Media/episode.bin"])
+            records[0]["bundle"] = False
+            project, count = import_folder_selection(new_project(), root, records)
+            project["library"].update({
+                "name": "T1 Test", "creator": "Curator", "category": "Test",
+            })
+            result = build_library(project, os.path.join(root, "T1 Test.odrlib"))
+            self.assertEqual(count, 1)
+            self.assertTrue(os.path.isfile(result.torrent_path))
+            self.assertEqual([extension.badge for extension in result.package.extensions], ["T1"])
+            self.assertTrue(result.package.extensions[0].required)
+            source = result.package.items[0]["artifacts"][0]["sources"][0]
+            self.assertEqual(source["type"], "torrent")
+            self.assertEqual(source["file_index"], 0)
+            self.assertEqual(source["path"].replace("\\", "/"), f"{os.path.basename(root)}/Media/episode.bin")
+            self.assertEqual(len(source["sha256"]), 64)
+            self.assertEqual(source["metainfo_path"], "torrents/library.torrent")
+
+    def test_t1_multi_file_padding_is_not_treated_as_a_catalog_file(self):
+        with tempfile.TemporaryDirectory() as root:
+            source_root = os.path.join(root, "The Sopranos")
+            season = os.path.join(source_root, "Season 05")
+            os.makedirs(season)
+            for episode in range(3, 15):
+                filename = f"The Sopranos (1999) - S05E{episode:02d} - Test [1080p].mkv"
+                with open(os.path.join(season, filename), "wb") as handle:
+                    handle.write(bytes([episode]) * (1000 + episode * 137))
+            records = scan_folder(source_root)
+            project, count = import_folder_selection(new_project(), source_root, records)
+            project["library"].update({
+                "name": "Multi-file T1", "creator": "Curator", "category": "Test",
+            })
+
+            result = build_library(project, os.path.join(root, "Multi-file T1.odrlib"))
+
+            self.assertEqual(count, 12)
+            sources = [
+                artifact["sources"][0]
+                for item in result.package.items for artifact in item["artifacts"]
+            ]
+            self.assertEqual(len(sources), 12)
+            self.assertEqual(len({source["file_index"] for source in sources}), 12)
+            self.assertTrue(all("/.pad/" not in source["path"] for source in sources))
+            self.assertGreater(max(source["file_index"] for source in sources), 11)
+
+    def test_future_optional_t_extension_uses_recognized_fallback(self):
+        with tempfile.TemporaryDirectory() as root:
+            payload = os.path.join(root, "file.bin")
+            with open(payload, "wb") as handle:
+                handle.write(b"future torrent fallback")
+            records = scan_folder(root)
+            records[0]["bundle"] = True
+            project, _count = import_folder_selection(new_project(), root, records)
+            project["library"].update({"name": "Future T", "creator": "Test", "category": "Test"})
+            source = build_library(project, os.path.join(root, "source.odrlib")).path
+            future = os.path.join(root, "future.odrlib")
+            self._rewrite_manifest(
+                source,
+                future,
+                lambda manifest: manifest["extensions"]["optional"][0].update(version=2),
+            )
+            inspected = inspect_library(future)
+            self.assertEqual([extension.badge for extension in inspected.extensions], ["T2"])
+            self.assertEqual(
+                [source["type"] for source in inspected.items[0]["artifacts"][0]["sources"]],
+                ["embedded"],
+            )
 
     def test_u1_requires_an_https_update_feed(self):
         with tempfile.TemporaryDirectory() as root:

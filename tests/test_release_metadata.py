@@ -15,7 +15,7 @@ class ReleaseMetadataTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertIsNone(CANONICAL_VERSION.fullmatch(value))
 
-        self.assertEqual(CREATOR_VERSION, "2026.0.1a")
+        self.assertEqual(CREATOR_VERSION, "2026.0.2a")
 
     def test_repository_metadata_matches_current_version_and_tag(self):
         with patch.dict(

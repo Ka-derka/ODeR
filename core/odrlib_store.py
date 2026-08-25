@@ -294,6 +294,31 @@ def extract_embedded(profile, source, destination):
     return {"path": destination, "size": size, "sha256": expected_hash}
 
 
+def torrent_metainfo(profile, source):
+    """Return validated metainfo for one installed T1 catalog source."""
+    info = load_profile_package(profile)
+    selected = None
+    for item in info.items:
+        for artifact in item.get("artifacts") or []:
+            for candidate in artifact.get("sources") or []:
+                if (
+                        candidate.get("type") == "torrent"
+                        and candidate.get("torrent_id") == (source or {}).get("torrent_id")
+                        and candidate.get("file_index") == (source or {}).get("file_index")
+                        and candidate.get("sha256") == (source or {}).get("sha256")):
+                    selected = candidate
+                    break
+    if not selected:
+        raise OdrLibError("The selected torrent source is not declared by this library.")
+    member_path = selected.get("metainfo_path")
+    try:
+        with zipfile.ZipFile(info.path, "r") as archive:
+            data = archive.read(member_path)
+    except (OSError, KeyError, RuntimeError, zipfile.BadZipFile) as exc:
+        raise OdrLibError("The library's torrent metadata could not be read.") from exc
+    return {"data": data, "source": selected, "package": info}
+
+
 def check_for_update(profile, session=None):
     stored = (profile or {}).get("odrlib") or {}
     feed_url = stored.get("update_feed_url")

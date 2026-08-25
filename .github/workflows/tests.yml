@@ -137,30 +137,14 @@ jobs:
     name: macOS applications
     needs: test
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Install build dependencies
-        run: |
-          python -m pip install -r requirements.txt
-          python -m pip install pyinstaller pillow
-
-      - name: Verify release metadata
-        run: python tools/verify_release.py
-
-      - name: Build application bundles
-        run: |
-          python -m PyInstaller --noconfirm build_macos.spec
-          python -m PyInstaller --noconfirm creator_macos.spec
+      - name: Build application bundles and disk images
+        run: ./build_macos.sh
 
       - name: Verify bundle metadata
         run: |
@@ -175,19 +159,6 @@ jobs:
         run: |
           "dist/ODeR.app/Contents/MacOS/ODeR" --smoke-test
           "dist/ODeR Creator.app/Contents/MacOS/ODeR Creator" --smoke-test
-
-      - name: Create disk images and checksums
-        run: |
-          mkdir -p release-dist
-          mkdir -p "dmg-stage/ODeR" "dmg-stage/ODeR Creator"
-          cp -R "dist/ODeR.app" "dmg-stage/ODeR/"
-          cp -R "dist/ODeR Creator.app" "dmg-stage/ODeR Creator/"
-          ln -s /Applications "dmg-stage/ODeR/Applications"
-          ln -s /Applications "dmg-stage/ODeR Creator/Applications"
-          hdiutil create -volname "ODeR" -srcfolder "dmg-stage/ODeR" -ov -format UDZO "release-dist/ODeR.dmg"
-          hdiutil create -volname "ODeR Creator" -srcfolder "dmg-stage/ODeR Creator" -ov -format UDZO "release-dist/ODeR Creator.dmg"
-          cd release-dist
-          shasum -a 256 "ODeR.dmg" "ODeR Creator.dmg" > SHA256SUMS.txt
 
       - name: Upload macOS release artifacts
         uses: actions/upload-artifact@v4

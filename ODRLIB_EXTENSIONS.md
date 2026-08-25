@@ -21,7 +21,7 @@ An ID can appear only once. Versions are positive integers and are scoped to the
 
 ## U1 — verified online updates
 
-Status: implemented in ODeR 1.1.0-alpha.2 and ODeR Creator 2026.0.1a.
+Status: implemented in ODeR 1.1.0-alpha.2+ and ODeR Creator 2026.0.1a+.
 
 U1 is optional because a library remains browsable when updating is unavailable. It requires a valid HTTPS `library.update.feed_url`. The feed identifies the permanent library UUID, monotonically increasing revision, complete package size and SHA-256, download URL, minimum reader, and release notes.
 
@@ -29,14 +29,18 @@ ODeR downloads an update to temporary storage, verifies the feed metadata and co
 
 ## T1 — BitTorrent sources
 
-Status: reserved for Alpha 3; not yet implemented or accepted as a required extension.
+Status: implemented in ODeR 1.1.0-alpha.3 and ODeR Creator 2026.0.2a.
 
-The planned T1 extension will allow Creator to build torrent metadata from selected bundled/source files, embed or reference that metadata in the package, and add torrent-backed artifact sources. The resulting `.odrlib` should be ready for both ODeR and redistribution without a separate preparation step.
+T1 embeds a complete hybrid BitTorrent metainfo file at `torrents/library.torrent` and a portable mapping document at `extensions/T1.json`. Creator also writes the same metainfo beside the package as a standalone `.torrent`, making the result ready to seed or redistribute with an ordinary BitTorrent client. Trackers may use HTTP, HTTPS, or UDP; web seeds may use HTTP or HTTPS, with torrent pieces and ODeR's final SHA-256 providing content-integrity checks.
 
-The Alpha 3 specification must define info-hash versions, trackers/web seeds, file-to-artifact mapping, magnet/torrent handling, piece verification, safe download roots, seeding consent, and privacy controls. It must also define requirement rules:
+Each mapped file records its catalog artifact UUID, torrent file index, torrent-relative path, byte size, and SHA-256. The extension document records the torrent UUID, v1 and v2 info hashes, name, privacy flag, piece length, tracker tiers, HTTPS web seeds, and metainfo member path. ODeR checks all of these against the decoded torrent and core catalog before importing a package.
+
+Requirement rules:
 
 - T1 may be optional when every torrent-backed artifact has a complete core `embedded` or `https` fallback.
 - T1 must be required when any advertised artifact depends on BitTorrent to be obtainable.
 - U1 and T1 can coexist. A U1 update replaces the package metadata; T1 moves the declared content. Neither extension weakens core member hashes or path rules.
 
-Alpha 2 reserves the ID and the extension mechanism only. It does not parse torrent sources, create torrents, start a client, seed data, or contact trackers.
+ODeR never starts a torrent during package import. A job starts only when the user chooses a Torrent source, and it requests only that mapped file. Partial data remains in a private staging folder for pause/retry, then the finished file is checked against its T1 byte size and SHA-256 before being moved into the normal structured download destination. The Alpha 3 client stops after completion; it does not silently keep seeding.
+
+DHT and local peer discovery are enabled by default. UPnP and NAT-PMP are off by default. All are explicit user preferences alongside connection and transfer limits. Joining a swarm reveals the torrent info hash and the user's peer address to other participants; Creator and ODeR surface these controls rather than treating torrent transport as equivalent to an HTTPS request.

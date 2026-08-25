@@ -11,6 +11,7 @@ next poll.
 """
 import os
 import hashlib
+import shutil
 import time
 import threading
 import unicodedata
@@ -125,7 +126,7 @@ def _collision_name(relative_path, number):
 
 
 def _new_queue_item(profile_id, profile_name, entry, group_id, group_name, destination_rel_path):
-    return {
+    item = {
         "id": uuid.uuid4().hex[:12],
         "profile_id": profile_id,
         "profile_name": profile_name,
@@ -143,6 +144,10 @@ def _new_queue_item(profile_id, profile_name, entry, group_id, group_name, desti
         "speed_bps": 0.0,
         "eta_seconds": None,
     }
+    for key in ("transport", "torrent"):
+        if key in entry:
+            item[key] = entry[key]
+    return item
 
 
 def enqueue_many(profile_id, profile_name, entries, group_id=None, group_name=None):
@@ -203,6 +208,27 @@ def enqueue(profile_id, profile_name, url, name, rel_path, group_id=None, group_
         profile_id,
         profile_name,
         [{"url": url, "name": name, "rel_path": rel_path}],
+        group_id,
+        group_name,
+    )
+    return result["items"][0]
+
+
+def enqueue_torrent(profile_id, profile_name, source, name, rel_path, group_id=None, group_name=None):
+    """Queue one validated T1 file through the same user-facing download list."""
+    source = dict(source or {})
+    torrent_id = str(source.get("torrent_id") or "")
+    file_index = int(source.get("file_index"))
+    if not torrent_id or file_index < 0:
+        raise ValueError("The selected torrent source is incomplete.")
+    url = f"torrent://{torrent_id}/{file_index}"
+    result = enqueue_many(
+        profile_id,
+        profile_name,
+        [{
+            "url": url, "name": name, "rel_path": rel_path,
+            "transport": "torrent", "torrent": source,
+        }],
         group_id,
         group_name,
     )
@@ -368,6 +394,8 @@ def destination_path(item):
 
 
 def _download_one(item, settings, log):
+    if item.get("transport") == "torrent":
+        return _download_torrent_one(item, settings, log)
     dest = _dest_path(item, create=True)
     part = dest + ".part"
     if os.path.isfile(dest) and load_settings().get("skip_existing_downloads", True):
@@ -440,6 +468,132 @@ def _download_one(item, settings, log):
     except Exception as e:
         update_item(item["id"], status="error", error=str(e))
         log(f"error downloading {item['name']}: {e}")
+
+
+def _torrent_staging_path(item):
+    root = _download_root()
+    staging_root = os.path.abspath(os.path.join(root, ".oder-torrents"))
+    staging = os.path.abspath(os.path.join(staging_root, _safe_component(item.get("id"), "task")))
+    if os.path.commonpath((staging_root, staging)) != staging_root:
+        raise ValueError("The torrent staging path escaped the download directory.")
+    return staging
+
+
+def _sha256_path(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _download_torrent_one(item, _profile_settings, log):
+    """Download one file from an embedded T1 torrent with safe file priorities."""
+    from core import odrlib_store
+    from core.torrent_support import binding, torrent_info
+
+    destination = _dest_path(item, create=True)
+    if os.path.isfile(destination) and load_settings().get("skip_existing_downloads", True):
+        size = os.path.getsize(destination)
+        update_item(
+            item["id"], status="done", bytes_done=size, bytes_total=size,
+            speed_bps=0.0, eta_seconds=0, error=None, result="existing",
+        )
+        return
+    profile = get_profile(item.get("profile_id"))
+    if not profile or profile.get("kind") != "odrlib":
+        update_item(item["id"], status="error", error="The source library is no longer installed.")
+        return
+    settings = load_settings()
+    source = dict(item.get("torrent") or {})
+    staging = _torrent_staging_path(item)
+    os.makedirs(staging, exist_ok=True)
+    update_item(item["id"], status="downloading", error=None)
+    try:
+        payload = odrlib_store.torrent_metainfo(profile, source)
+        lt = binding()
+        info = torrent_info(payload["data"])
+        file_index = int(source["file_index"])
+        if file_index < 0 or file_index >= info.num_files():
+            raise ValueError("The selected T1 file index is outside the torrent.")
+        session_settings = {
+            "enable_dht": bool(settings.get("torrent_enable_dht", True)),
+            "enable_lsd": bool(settings.get("torrent_enable_lsd", True)),
+            "enable_upnp": bool(settings.get("torrent_enable_upnp", False)),
+            "enable_natpmp": bool(settings.get("torrent_enable_natpmp", False)),
+            "connections_limit": max(10, int(settings.get("torrent_connections_limit", 80))),
+            "alert_mask": int(lt.alert.category_t.error_notification),
+        }
+        download_limit = max(0, int(settings.get("torrent_download_limit_kib", 0)))
+        upload_limit = max(0, int(settings.get("torrent_upload_limit_kib", 0)))
+        if download_limit:
+            session_settings["download_rate_limit"] = download_limit * 1024
+        if upload_limit:
+            session_settings["upload_rate_limit"] = upload_limit * 1024
+        session = lt.session(session_settings)
+        params = lt.add_torrent_params()
+        params.ti = info
+        params.save_path = staging
+        params.file_priorities = [0] * info.num_files()
+        params.file_priorities[file_index] = 4
+        handle = session.add_torrent(params)
+        expected_size = int(source.get("size") or info.files().file_size(file_index))
+        expected_hash = str(source.get("sha256") or "").casefold()
+        last_update = 0.0
+        while True:
+            if _stop_all.is_set():
+                handle.pause()
+                status = handle.status()
+                update_item(
+                    item["id"], status="paused", bytes_done=int(status.total_wanted_done),
+                    bytes_total=expected_size, speed_bps=0.0, eta_seconds=None,
+                )
+                return
+            current = next((entry for entry in load_queue() if entry.get("id") == item["id"]), None)
+            if not current or current.get("status") == "paused":
+                handle.pause()
+                return
+            status = handle.status()
+            error = getattr(status, "errc", None)
+            if error and error.value():
+                raise RuntimeError(error.message())
+            done = min(expected_size, int(status.total_wanted_done))
+            speed = max(0.0, float(status.download_payload_rate))
+            eta = (expected_size - done) / speed if speed and done < expected_size else None
+            now = time.monotonic()
+            if now - last_update >= 0.5:
+                update_item(
+                    item["id"], bytes_done=done, bytes_total=expected_size,
+                    speed_bps=speed, eta_seconds=eta,
+                )
+                last_update = now
+            if bool(status.is_seeding) or bool(status.is_finished):
+                break
+            for alert in session.pop_alerts():
+                if alert.__class__.__name__ in {"torrent_error_alert", "file_error_alert"}:
+                    raise RuntimeError(alert.message())
+            time.sleep(0.25)
+
+        relative = str(info.files().file_path(file_index)).replace("\\", "/")
+        downloaded = os.path.abspath(os.path.join(staging, *_safe_relative_path(relative, decode=False)))
+        if os.path.commonpath((staging, downloaded)) != staging or not os.path.isfile(downloaded):
+            raise RuntimeError("The completed torrent file was not found in its safe staging folder.")
+        actual_size = os.path.getsize(downloaded)
+        if actual_size != expected_size or (expected_hash and _sha256_path(downloaded) != expected_hash):
+            raise RuntimeError("The completed torrent file failed its size or SHA-256 check.")
+        os.replace(downloaded, destination)
+        update_item(
+            item["id"], status="done", bytes_done=actual_size, bytes_total=actual_size,
+            speed_bps=0.0, eta_seconds=0, error=None,
+        )
+        try:
+            shutil.rmtree(staging)
+        except OSError:
+            pass
+        log(f"torrent downloaded: {item['name']} ({item['profile_name']})")
+    except Exception as exc:
+        update_item(item["id"], status="error", error=str(exc), speed_bps=0.0, eta_seconds=None)
+        log(f"torrent error downloading {item['name']}: {exc}")
 
 
 def _profile_lane(profile_id, log):

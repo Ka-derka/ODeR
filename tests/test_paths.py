@@ -8,6 +8,12 @@ from core import paths
 
 
 class ApplicationPathTests(unittest.TestCase):
+    def test_internal_data_override_isolated_from_normal_application_data(self):
+        with tempfile.TemporaryDirectory() as temporary_dir, mock.patch.dict(
+            os.environ, {paths.DATA_DIR_OVERRIDE_ENV: temporary_dir}
+        ):
+            self.assertEqual(paths.data_dir(), temporary_dir)
+
     def test_portable_executable_uses_data_folder_beside_it(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
             executable = os.path.join(temporary_dir, "ODeR-Portable.exe")
