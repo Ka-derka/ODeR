@@ -8,6 +8,12 @@ from core import paths
 
 
 class ApplicationPathTests(unittest.TestCase):
+    def test_internal_data_override_isolated_from_normal_application_data(self):
+        with tempfile.TemporaryDirectory() as temporary_dir, mock.patch.dict(
+            os.environ, {paths.DATA_DIR_OVERRIDE_ENV: temporary_dir}
+        ):
+            self.assertEqual(paths.data_dir(), temporary_dir)
+
     def test_portable_executable_uses_data_folder_beside_it(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
             executable = os.path.join(temporary_dir, "ODeR-Portable.exe")
@@ -37,6 +43,20 @@ class ApplicationPathTests(unittest.TestCase):
             ), mock.patch.dict(os.environ, {"LOCALAPPDATA": local_app_data}):
                 self.assertFalse(paths.is_portable())
                 self.assertEqual(paths.data_dir(), os.path.join(local_app_data, "ODeR"))
+
+    def test_macos_application_uses_application_support(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            executable = os.path.join(temporary_dir, "ODeR.app", "Contents", "MacOS", "ODeR")
+            with mock.patch.object(sys, "frozen", True, create=True), mock.patch.object(
+                sys, "executable", executable
+            ), mock.patch.object(sys, "platform", "darwin"), mock.patch(
+                "core.paths.os.path.expanduser", return_value=temporary_dir
+            ):
+                self.assertFalse(paths.is_portable())
+                self.assertEqual(
+                    paths.data_dir(),
+                    os.path.join(temporary_dir, "Library", "Application Support", "ODeR"),
+                )
 
 
 if __name__ == "__main__":

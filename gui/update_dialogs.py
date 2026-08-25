@@ -35,16 +35,19 @@ class UpdateCheckTask(QThread):
     no_update = Signal()
     failed = Signal(str)
 
-    def __init__(self, current_version, channel, portable, parent=None):
+    def __init__(self, current_version, channel, mode, parent=None):
         super().__init__(parent)
         self.current_version = current_version
         self.channel = channel
-        self.portable = portable
+        self.mode = mode
 
     def run(self):
         try:
             info = updater.check_for_update(
-                self.current_version, channel=self.channel, portable=self.portable
+                self.current_version,
+                channel=self.channel,
+                portable=self.mode == "portable",
+                platform="macos" if self.mode == "macos" else None,
             )
             if info is None:
                 self.no_update.emit()
@@ -103,6 +106,7 @@ class UpdateDialog(QDialog):
 
         edition = {
             "installed": "Windows installer",
+            "macos": "macOS disk image",
             "portable": "Portable ZIP",
             "source": "GitHub release",
         }.get(mode, "Update")
@@ -133,6 +137,7 @@ class UpdateDialog(QDialog):
 
         primary_text = {
             "installed": "Download update",
+            "macos": "Download disk image",
             "portable": "Download portable ZIP",
             "source": "Open release page",
         }.get(mode, "Download update")

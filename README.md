@@ -4,9 +4,11 @@
 
 ODeR is a PySide6 desktop application for indexing web directory listings, browsing the cached tree offline, tracking changes, and downloading selected files. Each tracked location appears as a library with its own crawl and download settings, while the local SQLite index remains fast enough for large archives.
 
-Current version: **1.0.0**
+Current version: **1.1.0-alpha.3**
 
-ODeR 1.0 is the first stable release of the offline library browser, indexer, package manager, and structured downloader.
+Current Creator version: **2026.0.2a**
+
+ODeR 1.1.0 Alpha 3 can install and browse Creator-built `.odrlib` v1 catalogs, use bundled, HTTPS, or T1 torrent file sources, and safely apply curator-published U1 library updates. ODeR Creator keeps its independent calendar-style version line for the curator workstation.
 
 ## Highlights
 
@@ -18,11 +20,14 @@ ODeR 1.0 is the first stable release of the offline library browser, indexer, pa
 - Queue individual files or expandable download groups with speed and ETA while recreating the library's original folder hierarchy on disk.
 - Import, export, validate, and compare versioned `.oder` library packages.
 - Manage libraries from responsive Home tiles with settings, information, and export actions in each tile's menu.
+- Give libraries portable artwork, descriptions, creator/curator credits, categories, and tags.
+- Import, browse, search, update, and download from checksum-verified `.odrlib` v1 catalogs made by ODeR Creator.
+- Author `.odrproj` workspaces in the separate ODeR Creator application and export `.odrlib` v1 catalogs with folders, optional bundles, HTTPS mirrors, U1 update feeds, and T1 torrents.
 - Export either a complete library or a selected subtree.
 - Manage, repair, compact, or clear cached indexes without touching downloads.
 - Choose Graphite, Midnight, Light, OLED Black, or a custom color palette.
 - Check stable or preview GitHub releases in-app and download verified updates.
-- Keep one ODeR instance per Windows user and forward `.oder` files to the running window.
+- Keep one ODeR instance per user and forward `.oder` or `.odrlib` files to the running window.
 - Keep browsing, Home, Activity, and Downloads responsive while large indexes are updated.
 - Discover and load a directory-hosted full `.oder` index instead of crawling every folder.
 - Export a privacy-conscious diagnostics ZIP with schema, cache-health, and runtime information when troubleshooting.
@@ -32,8 +37,9 @@ ODeR 1.0 is the first stable release of the offline library browser, indexer, pa
 - Python 3.11 or newer
 - PySide6 6.6 or newer
 - Requests 2.31 or newer
+- libtorrent 2.1.1
 
-ODeR is designed primarily for Windows. The Python application can also run on other desktop platforms supported by PySide6, although the installer and `.oder` file association are Windows-specific.
+Supported packaged builds are the Windows installer and native macOS `.app`/DMG. Linux and other PySide6 desktop platforms can run from source.
 
 ## Run from source
 
@@ -52,11 +58,11 @@ Application data is created in `data/` at runtime. This directory can contain pr
 ## Test
 
 ```powershell
-python -m compileall -q core gui main.py
+python -m compileall -q core gui main.py creator_main.py
 python -m unittest discover -s tests -v
 ```
 
-The repository includes tests for cache paging and search, snapshots, crawl recovery, state migrations, structured and collision-safe download paths, diagnostics privacy and cache health, representative web-server directory listings, concurrent WAL reads, stable live UI updates, grouped downloads, favorites, hosted `.oder` discovery and conditional refreshes, package validation, subtree exports, conflict handling, package comparison, update selection, and verified update downloads. GitHub Actions runs the suite on Linux and Windows and smoke-builds the Windows portable executable. A configurable 100,000-entry cache benchmark is available at `tools/benchmark_cache.py`.
+The repository includes tests for cache paging and search, snapshots, crawl recovery, state migrations, structured and collision-safe download paths, diagnostics privacy and cache health, representative web-server directory listings, concurrent WAL reads, stable live UI updates, grouped downloads, favorites, hosted `.oder` discovery and conditional refreshes, package validation, extension handling, subtree exports, conflict handling, package comparison, update selection, and verified update downloads. GitHub Actions runs the suite on Linux and Windows, smoke-builds the Windows installer payloads, and creates both native macOS application bundles and DMGs. A configurable 100,000-entry cache benchmark is available at `tools/benchmark_cache.py`.
 
 ## Build for Windows
 
@@ -66,24 +72,33 @@ py -3.12 -m venv .venv
 .\build_windows.ps1
 ```
 
-The script installs PyInstaller and prepares GitHub-ready files in `release-dist\`:
+The script installs PyInstaller and prepares the supported Windows files in `release-dist\`. Inno Setup 6 is required:
 
-- `ODeR-Portable.exe` — single-file portable application.
-- `ODeR-Portable.zip` — recommended portable download, including the executable, portable marker and licensing files.
-- `ODeR Installer.exe` — Windows installer with Start menu/optional desktop shortcuts, uninstall support and the `.oder` file association. This is created when Inno Setup 6 is installed.
+- `ODeR Installer.exe` — Windows installer with Start menu/optional desktop shortcuts, uninstall support and `.oder`/`.odrlib` file associations.
+- `ODeR Creator Installer.exe` — installs the curator and archivist workstation and associates editable `.odrproj` projects.
 - `SHA256SUMS.txt` — SHA-256 checksums for the generated release assets.
 
-Portable ODeR stores its writable `data` directory beside the executable. The installed application stores writable data in `%LOCALAPPDATA%\ODeR`, not in `Program Files`. See [RELEASING.md](RELEASING.md) for the complete release checklist.
+The installed application stores writable data in `%LOCALAPPDATA%\ODeR`, not in `Program Files`. Portable distributions are no longer produced. See [RELEASING.md](RELEASING.md) for the complete release checklist.
+
+## Build for macOS
+
+Run this on macOS with Python 3.12:
+
+```bash
+bash build_macos.sh
+```
+
+The script creates `ODeR.app` and `ODeR Creator.app`, wraps each in a distributable DMG, and writes matching SHA-256 checksums to `release-dist/`. ODeR stores user data in `~/Library/Application Support/ODeR`. The bundles associate `.oder`/`.odrlib` with ODeR and `.odrproj` with Creator. These first builds are unsigned; Gatekeeper may require the user to approve opening them until a Developer ID signing and notarization workflow is added.
 
 ## Application updates
 
 Installed builds can check GitHub for stable or preview releases from **Settings → Application updates**. ODeR checks at most once per day when automatic checks are enabled, and manual **Check now** and **View releases** actions are always available. Update checks send only the normal GitHub request and ODeR version user-agent; local directory URLs, searches, downloads, and usage data are not sent.
 
-ODeR scans recent published releases and selects the newest compatible download, so a malformed tag or incomplete release does not block valid updates. Short tags such as `0.18` are normalized to `0.18.0`, although canonical semantic-version tags remain required by the release checklist for compatibility with older clients. Stable-channel users do not receive release candidates; testers can select the Preview channel for versions such as `1.0.0-rc.1`.
+ODeR scans recent published releases and selects the newest compatible download, so a malformed tag or incomplete release does not block valid updates. It understands semantic prereleases and legacy calendar-style tags. Stable-channel users do not receive prereleases; testers can select the Preview channel for versions such as `1.1.0-alpha.3`.
 
-The updater streams the installer into `%LOCALAPPDATA%\ODeR\updates` and verifies its SHA-256 digest before offering to launch it. GitHub's asset digest is preferred, with `SHA256SUMS.txt` as a fallback. Downloads are checked for expected size, available disk space, file type, archive structure, and trusted HTTPS origin. Failed partials are removed, while an already downloaded and verified update can be safely reused. When crawls or downloads are active, installation can wait until background work becomes idle.
+The updater streams the Windows installer or macOS DMG into ODeR's user-data update folder and verifies its SHA-256 digest before offering to open it. GitHub's asset digest is preferred, with `SHA256SUMS.txt` as a fallback. Downloads are checked for expected size, available disk space, file type, and trusted HTTPS origin. Failed partials are removed, while an already downloaded and verified update can be safely reused. On Windows, installation can wait until crawls and downloads become idle; on macOS, ODeR opens the verified disk image and explains how to replace the application.
 
-Portable builds use the same release notification interface but download `ODeR-Portable.zip` instead of modifying the running executable. Source checkouts can inspect the latest release without launching an installer.
+Source checkouts can inspect the latest release without launching an installer.
 
 ## Data recovery
 
@@ -121,6 +136,12 @@ cache.sqlite3       optional validated cached index
 
 Definition-only packages are small and must be indexed after import. Full packages include a consistent SQLite snapshot and can be browsed immediately. Imports validate the archive layout, manifest version, sizes, checksums, profile schema, URL, SQLite integrity, required tables, and cache counts before changing application data. The complete version 1 compatibility contract is documented in [ODER_FORMAT.md](ODER_FORMAT.md).
 
+## ODeR Creator and `.odrlib`
+
+ODeR Creator is the power-user companion for curators, archivists, and distributors. It keeps editable source paths and unfinished metadata in `.odrproj` projects, then builds immutable `.odrlib` packages. Its recursive folder importer presents per-file choices for catalog inclusion, optional bundling, and T1 torrent inclusion while preserving subfolders. It also supports library and file metadata, artwork, HTTPS mirrors, platform and architecture labels, rights information, automatic hashes, validation, update-feed generation, tracker and web-seed settings, and ODeR-style previews.
+
+`.odrlib` is a distinct ZIP/ZIP64 format for curated catalogs and optional content bundles. Each package has permanent library/item/artifact IDs, an update revision, a curator-facing version, declared sizes and SHA-256 hashes, and explicit source types. ODeR imports the package into managed application storage, keeps the original safe to share, and shows its folders and files in a read-only library tab. Bundled files are verified again while extracting; HTTPS and T1 files share the normal Downloads queue and preserve folder structure. The stable v1 core has separately versioned extensions: verified updating is `U1` and BitTorrent distribution is `T1`, so either or both can be added without changing the `.odrlib` extension. Torrent jobs start only after the user selects a T1 source; settings control DHT, local discovery, port mapping, peer limits, and transfer limits. See the [format contract](ODRLIB_FORMAT.md) and [extension registry](ODRLIB_EXTENSIONS.md).
+
 ## Hosted `.oder` indexes
 
 A directory can publish a full `.oder` package so ODeR can load one validated index instead of crawling every folder. ODeR checks an exact URL configured in **Edit Site**, advertised package links, and these paths beneath the directory base URL:
@@ -149,9 +170,14 @@ gui/                PySide6 windows, pages, widgets, dialogs and tray integratio
 tests/              standard-library unittest suite
 .github/             workflows and collaboration templates
 main.py              application entry point
+creator_main.py      ODeR Creator entry point
 build.spec           PyInstaller definition
-installer.iss        optional Inno Setup installer
-RELEASING.md          Windows build and GitHub release checklist
+creator.spec         ODeR Creator PyInstaller definition
+build_macos.spec      native macOS ODeR application definition
+creator_macos.spec    native macOS Creator application definition
+installer.iss         Inno Setup installer
+creator_installer.iss ODeR Creator installer
+RELEASING.md          Windows/macOS build and GitHub release checklist
 ```
 
 ## Contributing

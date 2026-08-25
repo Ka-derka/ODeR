@@ -111,3 +111,15 @@ def clear_memory_buffer():
     on disk is untouched."""
     with _buffer_lock:
         _buffer.clear()
+
+
+def shutdown_logging():
+    """Close logging resources so isolated test data can be removed on Windows."""
+    global _logger
+    with _logger_lock:
+        if _logger is None:
+            return
+        for handler in list(_logger.handlers):
+            _logger.removeHandler(handler)
+            handler.close()
+        _logger = None

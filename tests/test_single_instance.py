@@ -78,6 +78,18 @@ class SingleInstanceTests(unittest.TestCase):
             finally:
                 primary.close()
 
+    def test_isolated_smoke_scope_can_coexist_with_normal_instance(self):
+        with tempfile.TemporaryDirectory() as normal_scope, tempfile.TemporaryDirectory() as smoke_scope:
+            normal = SingleInstance(scope=normal_scope)
+            smoke = SingleInstance(scope=smoke_scope)
+            try:
+                self.assertNotEqual(normal.server_name, smoke.server_name)
+                self.assertTrue(normal.acquire())
+                self.assertTrue(smoke.acquire())
+            finally:
+                smoke.close()
+                normal.close()
+
 
 if __name__ == "__main__":
     unittest.main()

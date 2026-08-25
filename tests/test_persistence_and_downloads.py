@@ -63,6 +63,24 @@ class PersistenceAndDownloadTests(unittest.TestCase):
         self.assertEqual(recovered["bytes_done"], 1024)
         self.assertEqual(recovered["speed_bps"], 0.0)
 
+    def test_t1_download_uses_normal_persistent_structured_queue(self):
+        source = {
+            "type": "torrent",
+            "torrent_id": "3138b358-6e67-4217-b70b-dd0fe7871ed8",
+            "file_index": 7,
+            "path": "Library/Folder/file.bin",
+            "size": 123,
+            "sha256": "a" * 64,
+        }
+        item = downloader.enqueue_torrent(
+            "p", "Curated Library", source, "file.bin", "Folder"
+        )
+        stored = downloader.load_queue()[0]
+        self.assertEqual(item["transport"], "torrent")
+        self.assertEqual(stored["torrent"], source)
+        self.assertEqual(stored["url"], "torrent://3138b358-6e67-4217-b70b-dd0fe7871ed8/7")
+        self.assertEqual(stored["destination_rel_path"], "Curated Library/Folder/file.bin")
+
     def test_download_destination_recreates_decoded_source_folders(self):
         root = os.path.join(self.temp.name, "downloads")
         with patch.object(downloader, "load_settings", return_value={"download_dir": root}):

@@ -1,33 +1,27 @@
-# Build with: pyinstaller build.spec
-# Produces the private executable payload consumed by the Windows installer.
+# Build with: pyinstaller creator.spec
+# Produces the private executable payload used by the Creator installer.
 
-block_cipher = None
-
-from core.version import APP_VERSION, windows_version_tuple
+from core.version import CREATOR_VERSION, windows_version_tuple
 from PyInstaller.utils.win32.versioninfo import (
-    FixedFileInfo,
-    StringFileInfo,
-    StringStruct,
-    StringTable,
-    VSVersionInfo,
-    VarFileInfo,
-    VarStruct,
+    FixedFileInfo, StringFileInfo, StringStruct, StringTable, VSVersionInfo,
+    VarFileInfo, VarStruct,
 )
 
-version_tuple = windows_version_tuple()
+
+version_tuple = windows_version_tuple(CREATOR_VERSION)
 windows_version_info = VSVersionInfo(
     ffi=FixedFileInfo(filevers=version_tuple, prodvers=version_tuple),
     kids=[
         StringFileInfo([
             StringTable("040904B0", [
                 StringStruct("CompanyName", "kaderka"),
-                StringStruct("FileDescription", "ODeR — Offline Directory Browser"),
-                StringStruct("FileVersion", APP_VERSION),
-                StringStruct("InternalName", "ODeR"),
+                StringStruct("FileDescription", "ODeR Creator — Library authoring workstation"),
+                StringStruct("FileVersion", CREATOR_VERSION),
+                StringStruct("InternalName", "ODeR Creator"),
                 StringStruct("LegalCopyright", "Copyright © 2026 kaderka"),
-                StringStruct("OriginalFilename", "ODeR.exe"),
-                StringStruct("ProductName", "ODeR"),
-                StringStruct("ProductVersion", APP_VERSION),
+                StringStruct("OriginalFilename", "ODeR Creator.exe"),
+                StringStruct("ProductName", "ODeR Creator"),
+                StringStruct("ProductVersion", CREATOR_VERSION),
             ]),
         ]),
         VarFileInfo([VarStruct("Translation", [1033, 1200])]),
@@ -35,10 +29,10 @@ windows_version_info = VSVersionInfo(
 )
 
 a = Analysis(
-    ['main.py'],
+    ["creator_main.py"],
     pathex=[],
     binaries=[],
-    datas=[('icon.png', '.')],
+    datas=[("icon.png", ".")],
     hiddenimports=['libtorrent'],
     hookspath=[],
     hooksconfig={},
@@ -54,7 +48,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='ODeR',
+    name="ODeR Creator",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -64,8 +58,6 @@ exe = EXE(
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
-    icon='icon.ico',
+    icon="icon.ico",
     version=windows_version_info,
 )
-# The one-file executable is an installer payload, not a separately supported
-# portable distribution.

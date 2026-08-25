@@ -11,6 +11,7 @@ The versions actually installed or bundled may vary because `requirements.txt` s
 | PySide6, PySide6 Essentials, PySide6 Addons and Shiboken6 | Python bindings and support libraries for Qt | LGPL-3.0/GPL-3.0 or a Qt commercial license, depending on the distribution and use | [Qt for Python](https://doc.qt.io/qtforpython-6/) and [license details](https://doc.qt.io/qtforpython-6/licenses.html) |
 | Qt 6 libraries used by PySide6 | Desktop interface framework | LGPL-3.0/GPL-3.0 or a Qt commercial license; individual Qt modules may have additional terms | [Qt licensing](https://doc.qt.io/qt-6/licensing.html) |
 | Requests | HTTP client | Apache-2.0 | [Requests LICENSE](https://github.com/psf/requests/blob/main/LICENSE) |
+| libtorrent 2.1.1 | BitTorrent metainfo creation and T1 downloads | BSD-3-Clause | [libtorrent COPYING](https://github.com/arvidn/libtorrent/blob/RC_2_1/COPYING) |
 | Charset Normalizer | Response character-set detection used by Requests | MIT | [Charset Normalizer LICENSE](https://github.com/jawah/charset_normalizer/blob/master/LICENSE) |
 | idna | Internationalized domain-name handling used by Requests | BSD-3-Clause | [idna LICENSE](https://github.com/kjd/idna/blob/master/LICENSE.md) |
 | urllib3 | HTTP transport used by Requests | MIT | [urllib3 LICENSE](https://github.com/urllib3/urllib3/blob/main/LICENSE.txt) |
@@ -20,9 +21,11 @@ Python and its standard library may also be included in packaged application bui
 
 ## Build and installer tooling
 
-PyInstaller is used to create the Windows executable. PyInstaller is licensed under GPL-2.0-or-later with a bootloader exception; its runtime hooks have separate Apache-2.0 terms, and some components are alternatively available under MIT terms. See [PyInstaller's COPYING file](https://github.com/pyinstaller/pyinstaller/blob/develop/COPYING.txt). The bootloader exception permits distribution of the generated executable without applying the GPL to ODeR solely because PyInstaller was used.
+PyInstaller is used to create the Windows executables and macOS application bundles. PyInstaller is licensed under GPL-2.0-or-later with a bootloader exception; its runtime hooks have separate Apache-2.0 terms, and some components are alternatively available under MIT terms. See [PyInstaller's COPYING file](https://github.com/pyinstaller/pyinstaller/blob/develop/COPYING.txt). The bootloader exception permits distribution of the generated application without applying the GPL to ODeR solely because PyInstaller was used.
 
-Inno Setup may optionally be used to create the Windows installer. It is a build-time tool and is not included in this repository. Review the license accompanying the installed Inno Setup version before distributing installers produced with it.
+Pillow may be used at build time to convert the application icon into the platform-native bundle format. Pillow is licensed under the HPND License; see [Pillow's license](https://github.com/python-pillow/Pillow/blob/main/LICENSE).
+
+Inno Setup is used to create the Windows installers. It is a build-time tool and is not included in this repository. Review the license accompanying the installed Inno Setup version before distributing installers produced with it. Apple's `hdiutil`, supplied with macOS, creates the DMG files.
 
 ## Binary distribution responsibilities
 

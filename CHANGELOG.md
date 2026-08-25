@@ -4,6 +4,68 @@ Notable changes to ODeR are recorded here.
 
 ## Unreleased
 
+## 1.1.0-alpha.3 — 2026-08-25
+
+- Implemented T1 torrent sources inside the stable `.odrlib` v1 extension model; U1 and T1 may be declared together without renaming the package format.
+- Added strict T1 validation across extension documents, embedded torrent metainfo, info hashes, file indices, safe paths, sizes, SHA-256 values, artifact mappings, and required-versus-optional declarations.
+- Added T1 downloads to ODeR's existing Downloads queue with selected-file priorities, structured destinations, partial-data restart support, progress, pause, retry, final size and SHA-256 verification, and no automatic download on import.
+- Added explicit torrent privacy and networking settings for DHT, local peer discovery, UPnP, NAT-PMP, peer limits, and transfer limits; completed jobs stop instead of silently continuing to seed.
+- Added Torrent labels and source selection to curated-library tabs while keeping bundled and HTTPS fallbacks available.
+- Fixed multi-file hybrid torrents being rejected when libtorrent inserted internal alignment files between catalog files.
+
+## 2026.0.2a — 2026-08-25
+
+- Added a recursive source-folder workflow with per-file Catalog, Bundle, and Torrent choices and preserved subfolder collections.
+- Added automatic hybrid torrent creation, tracker tiers, HTTPS web seeds, private-torrent mode, automatic or selected piece sizes, creator metadata, and standalone `.torrent` output beside each T1 `.odrlib`.
+- Made bundling opt-in during folder imports while torrent inclusion is selected by default, keeping shareable catalogs small unless the curator intentionally embeds payloads.
+- Added T1 project persistence, validation, generated size and SHA-256 metadata, extension badges, required-versus-optional fallback rules, and regression coverage.
+
+## 1.1.0-alpha.2 — 2026-08-20
+
+- Added full `.odrlib` v1 import to the main ODeR browser with complete manifest, member, catalog, path, size, hash, capability, and package-layout validation before user data changes.
+- Added an artwork-first import preview, duplicate-library conflict handling, safe separate-copy imports, revision-aware replacement, and managed package storage.
+- Added read-only curated-library tabs with folders, files, resizable columns, local search, details, item pages, and source selection.
+- Added verified extraction for bundled payloads and normal queued downloads for HTTPS sources; ODeR never executes content from a library.
+- Added opt-in library update checks and verified package replacement through `.odrlib` v1 update feeds, preserving local downloads and preferences.
+- Kept **Check for updates** visible for every curated library and added a clear explanation when its curator did not embed an update-feed URL.
+- Added Home artwork and metadata for imported curated libraries, information and save-copy actions, drag-and-drop and single-instance opening, and a Windows `.odrlib` file association.
+- Split release numbering so the ODeR browser continues as `1.1.0-alpha.2` while ODeR Creator remains independently versioned as `2026.0.1a`.
+- Formalized `.odrlib` v1 as an extensible core and declared verified online updating as `U1`, including safe handling of unknown optional extensions and refusal of unknown required extensions.
+- Reserved `T1` for Alpha 3 BitTorrent sources and automated torrent creation without introducing a second `.odrlib2` filename or silently changing the core format.
+- Replaced portable release artifacts with supported Windows installers for both applications.
+- Added reproducible macOS `.app` and DMG builds for ODeR and ODeR Creator, native file associations, Application Support storage, and verified DMG update selection for ODeR.
+
+## 2026.0.1a — 2026-08-20
+
+- Changed the application release scheme to calendar-style `YEAR.MINOR.PATCH` versions with compact prerelease stages, beginning with `2026.0.1a`.
+- Added the first separately packaged ODeR Creator application so the main ODeR application can remain a focused browser and directory indexer.
+- Added editable `.odrproj` projects with portable relative source paths, atomic saves, recovery backups, drag-and-drop opening, and unsaved-change protection.
+- Added library, item, collection, artwork, platform, architecture, licensing, tagging, link, and publishing editors.
+- Made Creator automatically add `https://` to bare domains and paths across library, item, mirror, license, update-feed, and publishing fields while continuing to reject explicit insecure HTTP addresses.
+- Added local-folder bulk import, embedded payloads, multiple HTTPS sources, automatic filename/media-type handling, SHA-256 generation, and online-only integrity warnings.
+- Added `.odrlib` format version 1 as a strict ZIP/ZIP64 catalog container with permanent UUIDs, curator versions, numeric update revisions, declared members, sizes, hashes, capabilities, and safe paths.
+- Added complete post-build package inspection, catalog/count cross-checking, member hash verification, ZIP traversal/bomb limits, and rejection of encrypted, duplicate, unsafe, undeclared, or unsupported members.
+- Added version 1 update-feed generation with library identity, revision, package URL, size, complete-file SHA-256, minimum reader, channel, and release notes.
+- Added separate installer packaging for ODeR Creator, including `.odrproj` file association and aligned Windows version resources.
+- Added regression coverage for Creator workflows, project portability, package round-tripping, tamper rejection, folder import, update-feed output, and calendar-version ordering.
+- Simplified Creator around folders and files: files now choose one folder during creation or editing, and assigned files are nested beneath that folder in navigation.
+- Flattened the file workflow so metadata, bundled content, HTTPS mirrors, checksums, and expected size are edited together instead of through an item-with-files hierarchy.
+- Removed the duplicate action toolbar beneath the menu bar and duplicate Add/Import controls beneath navigation, while keeping Validate and Build directly beneath validation results.
+- Changed Creator distribution to installer-only and retained its standalone executable solely as the private installer payload.
+- Showed the active `.odrlib` extensions in Creator previews and generated U1 declarations whenever an update feed is configured.
+
+## 1.1.0-alpha.1 — 2026-08-20
+
+- Added optional library artwork, descriptions, creator/curator credits, categories, and tags through a new Library details editor.
+- Displayed custom artwork on Home library tiles while retaining deterministic generated covers for libraries without artwork.
+- Expanded Library Information to show descriptive metadata and an artwork preview alongside cache and source details.
+- Embedded size-limited, validated PNG/JPEG/WebP artwork and metadata inside existing `.oder` profile JSON so 1.1 preserves it while ODeR 1.0 remains able to import the package and ignore the optional fields.
+- Added strict metadata normalization, duplicate-tag removal, length and count limits, 1 MiB artwork limits, and package comparison reporting for presentation changes.
+- Added themed Library details and Indexing & downloads tabs plus regression coverage for persistence, artwork processing, Home display, and `.oder` round-tripping.
+- Redesigned Import and Library Information around an artwork-first summary with Name, conditional Link and Version, creator/curator, category, tags, cached contents, index source, normalized update time, and package-builder identity.
+- Preserved optional library versions, zero/one/multiple-link metadata, and `ODeR` or custom-builder provenance for future package formats and richer library sources.
+- Replaced Home's cached-state label with an optional library version and `YYYY/M/D HH:MM` update time, and standardized the new summaries on apostrophe thousands and dot decimals.
+
 ## 1.0.0 — 2026-08-20
 
 - Promoted the tested RC1 code to the first stable ODeR release without introducing additional feature changes.

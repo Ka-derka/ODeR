@@ -84,6 +84,12 @@ class UpdaterTests(unittest.TestCase):
         self.assertTrue(updater.is_newer_version("0.16.0-beta.10", "0.16.0-beta.2"))
         self.assertTrue(updater.is_newer_version("1.0.0-rc.2", "1.0.0-rc.1"))
         self.assertTrue(updater.is_newer_version("1.0.0", "1.0.0-rc.1"))
+        self.assertTrue(updater.is_newer_version("1.1.0-alpha.1", "1.0.0"))
+        self.assertTrue(updater.is_newer_version("2026.0.1a", "1.1.0-alpha.1"))
+        self.assertTrue(updater.is_newer_version("2026.0.1b", "2026.0.1a"))
+        self.assertTrue(updater.is_newer_version("2026.0.1rc", "2026.0.1b"))
+        self.assertTrue(updater.is_newer_version("2026.0.1", "2026.0.1rc"))
+        self.assertEqual(updater.normalize_version("v2026.0.1a"), "2026.0.1a")
         self.assertFalse(updater.is_newer_version("0.16.0+build.2", "0.16.0+build.1"))
         self.assertFalse(updater.is_newer_version("v0.15.2", "0.15.2"))
         with self.assertRaises(updater.UpdateError):
@@ -102,6 +108,12 @@ class UpdaterTests(unittest.TestCase):
         session = FakeSession({updater.RELEASES_URL: [FakeResponse(json_data=[metadata])]})
         info = updater.check_for_update("0.15.2", session=session)
         self.assertEqual(info.asset.name, "ODeR.Installer.exe")
+
+    def test_macos_update_selects_disk_image(self):
+        metadata = release(asset_name=updater.MACOS_ASSET_NAME)
+        session = FakeSession({updater.RELEASES_URL: [FakeResponse(json_data=[metadata])]})
+        info = updater.check_for_update("0.15.2", platform="macos", session=session)
+        self.assertEqual(info.asset.name, updater.MACOS_ASSET_NAME)
 
     def test_current_version_needs_no_asset_download(self):
         metadata = release(version="0.15.2")
@@ -135,6 +147,16 @@ class UpdaterTests(unittest.TestCase):
         info = updater.check_for_update("0.16.0", channel="preview", portable=True, session=session)
         self.assertEqual(info.version, "0.17.0-beta.1")
         self.assertEqual(info.asset.name, updater.PORTABLE_ASSET_NAME)
+
+    def test_stable_channel_ignores_alpha_release(self):
+        alpha = release(version="1.1.0-alpha.1")
+        session = FakeSession({updater.RELEASES_URL: [FakeResponse(json_data=[alpha])]})
+        self.assertIsNone(updater.check_for_update("1.0.0", channel="stable", session=session))
+
+    def test_stable_channel_ignores_compact_calendar_alpha(self):
+        alpha = release(version="2026.0.1a")
+        session = FakeSession({updater.RELEASES_URL: [FakeResponse(json_data=[alpha])]})
+        self.assertIsNone(updater.check_for_update("1.0.0", channel="stable", session=session))
 
     def test_checksum_file_is_used_when_asset_digest_is_missing(self):
         metadata = release()
@@ -205,6 +227,20 @@ class UpdaterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_dir:
             with self.assertRaisesRegex(updater.UpdateError, "not a Windows executable"):
                 updater.download_update(info, destination_root=temporary_dir, session=session)
+
+    def test_verified_macos_disk_image_is_accepted(self):
+        payload = b"test image" + b"koly" + bytes(508)
+        asset_url = "https://github.com/Ka-derka/ODeR/releases/download/v0.19.0/ODeR.dmg"
+        info = updater.UpdateInfo(
+            version="0.19.0", title="ODeR", notes="", published_at="", page_url="",
+            channel="stable", asset=updater.ReleaseAsset(
+                updater.MACOS_ASSET_NAME, asset_url, len(payload), hashlib.sha256(payload).hexdigest()
+            ),
+        )
+        session = FakeSession({asset_url: [FakeResponse(content=payload, url=asset_url)]})
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            result = updater.download_update(info, destination_root=temporary_dir, session=session)
+            self.assertTrue(result.endswith(".dmg"))
 
     def test_existing_verified_download_is_reused(self):
         payload = b"MZalready downloaded"

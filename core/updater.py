@@ -21,8 +21,10 @@ STABLE_RELEASE_URL = f"{GITHUB_API_ROOT}/releases/latest"
 RELEASES_URL = f"{GITHUB_API_ROOT}/releases"
 INSTALLER_ASSET_NAME = "ODeR Installer.exe"
 PORTABLE_ASSET_NAME = "ODeR-Portable.zip"
+MACOS_ASSET_NAME = "ODeR.dmg"
 INSTALLER_ASSET_NAMES = (INSTALLER_ASSET_NAME, "ODeR.Installer.exe")
 PORTABLE_ASSET_NAMES = (PORTABLE_ASSET_NAME,)
+MACOS_ASSET_NAMES = (MACOS_ASSET_NAME,)
 CHECKSUM_ASSET_NAME = "SHA256SUMS.txt"
 CHECK_INTERVAL = timedelta(hours=24)
 MAX_UPDATE_BYTES = 2 * 1024 * 1024 * 1024
@@ -30,7 +32,7 @@ DISK_SPACE_MARGIN = 64 * 1024 * 1024
 RELEASES_PAGE_URL = f"https://github.com/{REPOSITORY}/releases"
 
 _VERSION_PATTERN = re.compile(
-    r"^v?(\d+)\.(\d+)(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$",
+    r"^v?(\d+)\.(\d+)(?:\.(\d+))?(?:(?:-([0-9A-Za-z.-]+))|(?:(a|b|rc)(\d*)))?(?:\+[0-9A-Za-z.-]+)?$",
     re.IGNORECASE,
 )
 _SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
@@ -75,20 +77,31 @@ class UpdateInfo:
 
 
 def parse_version(value):
-    """Return a comparable version tuple, accepting ``0.18`` as ``0.18.0``."""
+    """Return a comparable tuple for legacy SemVer and ODeR calendar versions."""
     match = _VERSION_PATTERN.fullmatch(str(value or "").strip())
     if not match:
         raise UpdateError(f"Invalid release version: {value!r}")
-    major, minor, patch, suffix = match.groups()
+    major, minor, patch, suffix, compact_stage, compact_number = match.groups()
     patch = patch or "0"
-    if suffix is None:
+    if compact_stage:
+        stage_rank = {"a": 0, "b": 1, "rc": 2}[compact_stage.casefold()]
+        prerelease_key = ((0, stage_rank), (0, int(compact_number or 0)))
+        stable = 0
+    elif suffix is None:
         prerelease_key = ()
         stable = 1
     else:
-        prerelease_key = tuple(
-            (0, int(part)) if part.isdigit() else (1, part.casefold())
-            for part in suffix.split(".")
-        )
+        aliases = {"a": 0, "alpha": 0, "b": 1, "beta": 1, "rc": 2}
+        prerelease_parts = []
+        for part in suffix.split("."):
+            folded = part.casefold()
+            if part.isdigit():
+                prerelease_parts.append((0, int(part)))
+            elif folded in aliases:
+                prerelease_parts.append((0, aliases[folded]))
+            else:
+                prerelease_parts.append((1, folded))
+        prerelease_key = tuple(prerelease_parts)
         stable = 0
     # A stable version sorts after every pre-release with the same numbers.
     return int(major), int(minor), int(patch), stable, prerelease_key
@@ -99,10 +112,12 @@ def normalize_version(value):
     match = _VERSION_PATTERN.fullmatch(str(value or "").strip())
     if not match:
         raise UpdateError(f"Invalid release version: {value!r}")
-    major, minor, patch, suffix = match.groups()
+    major, minor, patch, suffix, compact_stage, compact_number = match.groups()
     normalized = f"{int(major)}.{int(minor)}.{int(patch or 0)}"
     if suffix:
         normalized += f"-{suffix}"
+    elif compact_stage:
+        normalized += compact_stage.casefold() + compact_number
     return normalized
 
 
@@ -211,8 +226,11 @@ def _asset_by_names(release, names):
     return None
 
 
-def _select_update_asset(release, portable):
-    names = PORTABLE_ASSET_NAMES if portable else INSTALLER_ASSET_NAMES
+def _select_update_asset(release, portable=False, platform=None):
+    if platform == "macos":
+        names = MACOS_ASSET_NAMES
+    else:
+        names = PORTABLE_ASSET_NAMES if portable else INSTALLER_ASSET_NAMES
     exact = _asset_by_names(release, names)
     if exact:
         return exact
@@ -221,7 +239,10 @@ def _select_update_asset(release, portable):
             continue
         name = str(asset.get("name") or "")
         folded = re.sub(r"[^a-z0-9]", "", name.casefold())
-        if portable:
+        if platform == "macos":
+            if name.casefold().endswith(".dmg") and folded.startswith("oder") and "creator" not in folded:
+                return asset
+        elif portable:
             if name.casefold().endswith(".zip") and folded.startswith("oder") and "portable" in folded:
                 return asset
         elif (name.casefold().endswith(".exe") and folded.startswith("oder")
@@ -279,6 +300,8 @@ def _resolve_checksum(session, release, asset, current_version):
         checksum_names = {asset_name}
         if asset_name in INSTALLER_ASSET_NAMES:
             checksum_names.update(INSTALLER_ASSET_NAMES)
+        elif asset_name in MACOS_ASSET_NAMES:
+            checksum_names.update(MACOS_ASSET_NAMES)
         candidate = _checksum_from_text(
             _download_text(session, checksum_asset, current_version), checksum_names
         )
@@ -287,19 +310,22 @@ def _resolve_checksum(session, release, asset, current_version):
     raise UpdateError(f"The release does not provide a SHA-256 checksum for {asset.get('name', 'the update')}.")
 
 
-def check_for_update(current_version, channel="stable", portable=False, session=None):
+def check_for_update(current_version, channel="stable", portable=False, platform=None, session=None):
     """Return UpdateInfo for a newer release, or None when already current."""
     channel = "preview" if channel == "preview" else "stable"
     owns_session = session is None
     session = session or requests.Session()
     try:
         current_key = parse_version(current_version)
-        expected_asset_name = PORTABLE_ASSET_NAME if portable else INSTALLER_ASSET_NAME
+        if platform == "macos":
+            expected_asset_name = MACOS_ASSET_NAME
+        else:
+            expected_asset_name = PORTABLE_ASSET_NAME if portable else INSTALLER_ASSET_NAME
         unusable = []
         for version_key, version, release in _release_candidates(session, channel, current_version):
             if version_key <= current_key:
                 continue
-            asset = _select_update_asset(release, portable)
+            asset = _select_update_asset(release, portable, platform)
             if not asset:
                 unusable.append(f"ODeR {version} does not include {expected_asset_name}")
                 continue
@@ -371,6 +397,15 @@ def _validate_update_payload(path, asset_name):
                     raise UpdateError("The portable update does not contain the expected ODeR files.")
         except zipfile.BadZipFile as exc:
             raise UpdateError("The verified portable update is not a valid ZIP file.") from exc
+        return
+    if lowered.endswith(".dmg"):
+        try:
+            with open(path, "rb") as handle:
+                handle.seek(-512, os.SEEK_END)
+                if handle.read(4) != b"koly":
+                    raise UpdateError("The verified update is not a valid macOS disk image.")
+        except OSError as exc:
+            raise UpdateError("The verified macOS disk image could not be read.") from exc
         return
     raise UpdateError("The release asset has an unsupported file type.")
 

@@ -30,7 +30,9 @@ def suggested_filename():
 def _runtime_edition():
     if not getattr(sys, "frozen", False):
         return "development"
-    return "portable" if is_portable() else "installed"
+    if sys.platform == "darwin":
+        return "macOS application"
+    return "legacy portable" if is_portable() else "installed"
 
 
 def _state_file(path):
