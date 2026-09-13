@@ -38,9 +38,10 @@ UPDATE_EXTENSION_ID = "U"
 UPDATE_EXTENSION_VERSION = 1
 TORRENT_EXTENSION_ID = "T"
 TORRENT_EXTENSION_VERSION = 1
+TORRENT_UPDATE_VERSION = 2
 SUPPORTED_EXTENSIONS = {
     UPDATE_EXTENSION_ID: {UPDATE_EXTENSION_VERSION},
-    TORRENT_EXTENSION_ID: {TORRENT_EXTENSION_VERSION},
+    TORRENT_EXTENSION_ID: {TORRENT_EXTENSION_VERSION, TORRENT_UPDATE_VERSION},
 }
 
 MANIFEST_NAME = "manifest.json"
@@ -129,6 +130,7 @@ class BuildResult:
     warnings: tuple[ValidationIssue, ...]
     feed_path: str | None = None
     torrent_path: str | None = None
+    update_torrent_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -143,6 +145,7 @@ class UpdateFeedInfo:
     sha256: str
     minimum_reader: str
     release_notes: str
+    torrent: dict | None = None
 
 
 def _now_iso():
@@ -398,7 +401,8 @@ def new_project():
         },
         "items": [],
         "collections": [],
-        "publishing": {"package_url": "", "release_notes": ""},
+        "publishing": {"package_url": "", "release_notes": "", "torrent_updates": False,
+                       "update_torrent_url": ""},
         "torrent": {
             "root_path": "", "trackers": [], "web_seeds": [],
             "private": False, "comment": "", "piece_size": 0,
@@ -523,6 +527,8 @@ def normalize_project(value):
         "publishing": {
             "package_url": _portable_url(publishing.get("package_url")),
             "release_notes": _clean_text(publishing.get("release_notes"), 20_000),
+            "torrent_updates": bool(publishing.get("torrent_updates", False)),
+            "update_torrent_url": _portable_url(publishing.get("update_torrent_url")),
         },
         "torrent": {
             "root_path": _clean_text(torrent.get("root_path"), 32768),
@@ -772,6 +778,15 @@ def validate_project(project, project_path=None):
                 "error", "Torrent sharing",
                 "A private torrent needs at least one tracker because DHT peer discovery is disabled.",
             ))
+    if project["publishing"].get("torrent_updates"):
+        if not _https_url((project["library"].get("update") or {}).get("feed_url")):
+            issues.append(ValidationIssue("error", "Publishing", "Torrent updates need an HTTPS update feed URL."))
+        if not _https_url(project["publishing"].get("package_url")):
+            issues.append(ValidationIssue("error", "Publishing", "Torrent updates need an HTTPS package fallback URL."))
+        if not _https_url(project["publishing"].get("update_torrent_url")):
+            issues.append(ValidationIssue("error", "Publishing", "Enter the HTTPS address where the update .torrent will be published."))
+        if torrent.get("private") and not torrent.get("trackers") and not torrent_sources:
+            issues.append(ValidationIssue("error", "Publishing", "Private torrent updates need at least one tracker."))
     if not project["items"]:
         issues.append(ValidationIssue("warning", "Library", "The library does not contain any files yet."))
     if total_embedded_bytes > MAX_TOTAL_BYTES:
@@ -886,12 +901,25 @@ def build_library(project, destination, *, project_path=None):
         if len(torrent_metadata["files"]) != len(torrent_records):
             raise OdrLibError("The generated torrent file map is incomplete.")
         torrent_id = _new_id()
-        for record, metainfo_file in zip(torrent_records, torrent_metadata["files"]):
+        records_by_path = {record["relative_path"]: record for record in torrent_records}
+        ordered_records = []
+        for metainfo_file in torrent_metadata["files"]:
+            parts = PurePosixPath(metainfo_file["path"]).parts
+            if not parts or parts[0] != torrent_metadata["name"]:
+                raise OdrLibError("The generated torrent contains an unexpected root folder.")
+            relative = PurePosixPath(*parts[1:]).as_posix()
+            record = records_by_path.pop(relative, None)
+            if record is None:
+                raise OdrLibError(f"The generated torrent contains an unexpected file: {relative}")
             record.update({
                 "torrent_id": torrent_id,
                 "file_index": metainfo_file["file_index"],
                 "torrent_path": metainfo_file["path"],
             })
+            ordered_records.append(record)
+        if records_by_path:
+            raise OdrLibError("The generated torrent file map is incomplete.")
+        torrent_records[:] = ordered_records
         torrent_by_artifact = {record["artifact_id"]: record for record in torrent_records}
     else:
         torrent_by_artifact = {}
@@ -1034,7 +1062,7 @@ def build_library(project, destination, *, project_path=None):
                     "id": UPDATE_EXTENSION_ID,
                     "version": UPDATE_EXTENSION_VERSION,
                 })
-            if torrent_records:
+            if torrent_records or project["publishing"].get("torrent_updates"):
                 torrent_required = any(
                     any(source["type"] == "torrent" for source in artifact["sources"])
                     and not any(source["type"] in {"embedded", "https"} for source in artifact["sources"])
@@ -1042,7 +1070,7 @@ def build_library(project, destination, *, project_path=None):
                 )
                 extensions["required" if torrent_required else "optional"].append({
                     "id": TORRENT_EXTENSION_ID,
-                    "version": TORRENT_EXTENSION_VERSION,
+                    "version": TORRENT_UPDATE_VERSION if project["publishing"].get("torrent_updates") else TORRENT_EXTENSION_VERSION,
                 })
             manifest = {
                 "format": FORMAT_ID,
@@ -1080,6 +1108,13 @@ def build_library(project, destination, *, project_path=None):
         except FileNotFoundError:
             pass
 
+    update_torrent_path = None
+    update_torrent = None
+    if project["publishing"].get("torrent_updates"):
+        from core.torrent_updates import build_update_torrent
+        update_torrent_path, update_torrent = build_update_torrent(
+            destination, project["publishing"]["update_torrent_url"], project["torrent"]
+        )
     feed_path = None
     package_url = project["publishing"].get("package_url")
     if (package.library.get("update") or {}).get("feed_url") and package_url:
@@ -1087,6 +1122,7 @@ def build_library(project, destination, *, project_path=None):
         write_update_feed(
             package, destination, feed_path, package_url,
             project["publishing"].get("release_notes", ""), package_sha=package_sha,
+            torrent=update_torrent,
         )
     torrent_path = None
     if torrent_data is not None:
@@ -1111,6 +1147,7 @@ def build_library(project, destination, *, project_path=None):
         warnings=tuple(issue for issue in issues if issue.level == "warning"),
         feed_path=feed_path,
         torrent_path=torrent_path,
+        update_torrent_path=update_torrent_path,
     )
 
 
@@ -1238,10 +1275,11 @@ def inspect_library(path, *, verify_hashes=True):
         library = library_doc["library"]
         items = items_doc["items"]
         collections = collections_doc["collections"]
+        t2_enabled = any(extension.id == "T" and extension.version == 2 for extension in extensions)
         t1_enabled = any(
-            extension.id == TORRENT_EXTENSION_ID and extension.version == TORRENT_EXTENSION_VERSION
+            extension.id == TORRENT_EXTENSION_ID and extension.version in {1, 2}
             for extension in extensions
-        )
+        ) and (not t2_enabled or TORRENT_EXTENSION_NAME in declared_by_path)
         torrent_file_map = {}
         torrent_ids = set()
         if t1_enabled:
@@ -1418,7 +1456,7 @@ def inspect_library(path, *, verify_hashes=True):
                 raise OdrLibError("The T1 file map contains an unreferenced or missing catalog source.")
             t1_declaration = next(
                 extension for extension in extensions
-                if extension.id == TORRENT_EXTENSION_ID and extension.version == TORRENT_EXTENSION_VERSION
+                if extension.id == TORRENT_EXTENSION_ID and extension.version in {1, 2}
             )
             if torrent_only_dependency and not t1_declaration.required:
                 raise OdrLibError("T1 must be required when a catalog file has no bundled or HTTPS fallback.")
@@ -1462,6 +1500,8 @@ def inspect_library(path, *, verify_hashes=True):
         legacy_u1 = "update-feed-v1" in optional_capabilities
         if declared_u1 and not feed_url:
             raise OdrLibError("Extension U1 requires a valid HTTPS library update feed.")
+        if t2_enabled and (not declared_u1 or not feed_url):
+            raise OdrLibError("Extension T2 requires U1 and a valid HTTPS update feed.")
         if feed_url and not declared_u1:
             if legacy_u1 and not declared_update_extensions:
                 # Compatibility with packages created by the first Alpha 2 build.
@@ -1501,7 +1541,7 @@ def inspect_library(path, *, verify_hashes=True):
         )
 
 
-def write_update_feed(package, package_path, destination, package_url, release_notes="", *, package_sha=None):
+def write_update_feed(package, package_path, destination, package_url, release_notes="", *, package_sha=None, torrent=None):
     if not isinstance(package, LibraryPackageInfo):
         package = inspect_library(package_path)
     package_url = _https_url(package_url)
@@ -1524,6 +1564,8 @@ def write_update_feed(package, package_path, destination, package_url, release_n
             "release_notes": _clean_text(release_notes, 20_000),
         },
     }
+    if torrent is not None:
+        feed["latest"]["torrent"] = torrent
     inspect_update_feed(feed)
     save_json(os.path.abspath(destination), feed, backup=False)
     return feed
@@ -1558,6 +1600,10 @@ def inspect_update_feed(value):
     url = _https_url(latest.get("url"))
     if revision < 1 or size < 1 or size > MAX_TOTAL_BYTES or not _SHA256_RE.fullmatch(sha256) or not url:
         raise OdrLibError("The update feed contains unsafe or incomplete package metadata.")
+    torrent = latest.get("torrent")
+    if torrent is not None:
+        from core.torrent_updates import validate_descriptor
+        torrent = validate_descriptor(torrent)
     return UpdateFeedInfo(
         library_id=library_id,
         channel=_clean_text(value.get("channel"), 50) or "stable",
@@ -1569,6 +1615,7 @@ def inspect_update_feed(value):
         sha256=sha256,
         minimum_reader=_clean_text(latest.get("minimum_reader"), 100),
         release_notes=_clean_text(latest.get("release_notes"), 20_000),
+        torrent=torrent,
     )
 
 

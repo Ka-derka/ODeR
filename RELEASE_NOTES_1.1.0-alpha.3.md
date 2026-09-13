@@ -30,5 +30,6 @@ Selected-file downloads now apply their libtorrent priority in one complete oper
 
 - This is a preview release; choose **Preview releases** in ODeR's update settings.
 - A torrent still needs reachable peers, a tracker, a web seed, or DHT availability. Creating metainfo does not upload or seed the source files automatically.
+- A trackerless torrent can remain at 0 B for tens of seconds while DHT or local discovery finds its first peer. Adding a tracker makes controlled tests much more predictable.
 - DHT and local discovery reveal participation in a torrent swarm to peers. Review the new Torrent Downloads settings before testing sensitive material.
-- Windows builds are installer-only. The macOS workflow produces Intel x64 app/DMG builds for macOS 12 Monterey or newer and checks every bundled native component before upload.
+- Windows builds are installer-only. The macOS workflow produces Intel x64 app/DMG builds for macOS 12 Monterey or newer and checks every bundled native component before upload. There is not yet a native Apple-silicon release.

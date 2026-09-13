@@ -11,18 +11,22 @@ from PySide6.QtWidgets import (
     QDialogButtonBox, QFileDialog, QFormLayout, QFrame,
     QHBoxLayout, QLabel, QLineEdit, QListWidget,
     QMainWindow, QMenu, QMessageBox, QPlainTextEdit,
-    QPushButton, QScrollArea, QSpinBox, QSplitter, QStackedWidget,
-    QStatusBar, QTreeWidget,
+    QPushButton, QScrollArea, QSizePolicy, QSpinBox, QSplitter, QStackedWidget,
+    QStatusBar, QToolButton, QTreeWidget,
     QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from core.odrlib import (
-    OdrLibError, build_library, import_folder_selection, load_project, new_artifact,
+    OdrLibError, import_folder_selection, load_project, new_artifact,
     new_collection, new_item, new_project, normalize_project, save_project,
     scan_folder, validate_project,
 )
 from core.settings import load_settings
+from core.creator_state import record_recent
 from core.version import CREATOR_NAME, CREATOR_VERSION
+from gui.creator_home import CreatorHomePage
+from gui.creator_build import BuildProgressDialog
+from gui.creator_publish import PublishResultDialog
 from gui.main_window import THEME_PRESETS, _render_theme_qss
 from gui.package_dialogs import format_bytes, format_number
 
@@ -46,12 +50,51 @@ def _line_values(text):
     return [line.strip() for line in str(text or "").splitlines() if line.strip()]
 
 
+def _resolve_local_source(path, project_path):
+    if not path:
+        return ""
+    if not os.path.isabs(path) and project_path:
+        path = os.path.join(os.path.dirname(project_path), path)
+    return os.path.abspath(path)
+
+
 def _set_combo(combo, value):
     index = combo.findText(str(value or ""), Qt.MatchFixedString)
     if index < 0:
         combo.addItem(str(value or "Other"))
         index = combo.count() - 1
     combo.setCurrentIndex(index)
+
+
+class DetailSection(QFrame):
+    """A keyboard-accessible section; hiding details never clears their values."""
+
+    def __init__(self, title, *, expanded=False, parent=None):
+        super().__init__(parent)
+        self.setObjectName("card")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 10, 14, 12)
+        self.toggle = QToolButton()
+        self.toggle.setObjectName("creatorSectionToggle")
+        self.toggle.setText(title)
+        self.toggle.setCheckable(True)
+        self.toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.toggle.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        layout.addWidget(self.toggle)
+        self.body = QWidget()
+        self.form = QFormLayout(self.body)
+        self.form.setContentsMargins(2, 10, 2, 2)
+        self.form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        self.form.setRowWrapPolicy(QFormLayout.WrapLongRows)
+        self.form.setVerticalSpacing(10)
+        layout.addWidget(self.body)
+        self.toggle.toggled.connect(self.set_expanded)
+        self.set_expanded(expanded)
+
+    def set_expanded(self, expanded):
+        self.toggle.setChecked(bool(expanded))
+        self.toggle.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+        self.body.setVisible(bool(expanded))
 
 
 class PathPicker(QWidget):
@@ -90,7 +133,7 @@ class NewFileDialog(QDialog):
     def __init__(self, folders=(), default_folder_id=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Add file")
-        self.resize(640, 610)
+        self.resize(660, 640)
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 16, 18, 16)
         title = QLabel("Add a file")
@@ -101,7 +144,17 @@ class NewFileDialog(QDialog):
         hint.setWordWrap(True)
         root.addWidget(hint)
 
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(12)
         form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        form.setRowWrapPolicy(QFormLayout.WrapLongRows)
+        form.setVerticalSpacing(10)
         self.name = QLineEdit()
         self.folder = QComboBox()
         self.folder.addItem("No folder", None)
@@ -113,10 +166,11 @@ class NewFileDialog(QDialog):
         self.filename.setPlaceholderText("Displayed download filename")
         self.embedded = PathPicker("Choose a local source file", "All files (*)")
         self.embedded.edit.textChanged.connect(self._embedded_changed)
-        self.bundle = QCheckBox("Bundle this file inside the .odrlib")
+        self.bundle = QCheckBox("Include a copy inside the library")
         self.bundle.setChecked(False)
-        self.torrent = QCheckBox("Include this file in the generated T1 torrent")
-        self.torrent.setChecked(True)
+        self.bundle.setEnabled(False)
+        self.torrent = QCheckBox("Share using a torrent")
+        self.torrent.setEnabled(False)
         self.urls = QPlainTextEdit()
         self.urls.setPlaceholderText("One HTTPS URL per line\nhttps://example.org/download/file.zip")
         self.urls.setFixedHeight(90)
@@ -136,13 +190,18 @@ class NewFileDialog(QDialog):
         form.addRow("Local source", self.embedded)
         form.addRow("", self.bundle)
         form.addRow("", self.torrent)
-        form.addRow("HTTPS mirrors", self.urls)
-        form.addRow("Media type", self.media_type)
-        form.addRow("Platform", self.platform)
-        form.addRow("Architecture", self.architecture)
-        form.addRow("Expected size", self.size)
-        form.addRow("Expected SHA-256", self.checksum)
-        root.addLayout(form)
+        form.addRow("Download links", self.urls)
+        content_layout.addLayout(form)
+        advanced = DetailSection("More details · platform and verification")
+        advanced.form.addRow("Media type", self.media_type)
+        advanced.form.addRow("Platform", self.platform)
+        advanced.form.addRow("Architecture", self.architecture)
+        advanced.form.addRow("Expected bytes", self.size)
+        advanced.form.addRow("SHA-256", self.checksum)
+        content_layout.addWidget(advanced)
+        content_layout.addStretch(1)
+        scroll.setWidget(content)
+        root.addWidget(scroll, 1)
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self._accept_checked)
         buttons.rejected.connect(self.reject)
@@ -150,7 +209,13 @@ class NewFileDialog(QDialog):
 
     def _embedded_changed(self, path):
         basename = os.path.basename(str(path or "").strip())
+        if basename and not self.torrent.isEnabled():
+            self.torrent.setChecked(True)
+        self.torrent.setEnabled(bool(basename))
+        self.bundle.setEnabled(bool(basename))
         if not basename:
+            self.torrent.setChecked(False)
+            self.bundle.setChecked(False)
             return
         if not self.filename.text().strip():
             self.filename.setText(basename)
@@ -314,6 +379,8 @@ class CreatorWindow(QMainWindow):
         self._current_node = ("library", None)
         self._loaded_folder_id = None
         self._last_build = None
+        self._has_document = False
+        self.sections = {}
         self.setAcceptDrops(True)
         self.setMinimumSize(1050, 680)
         self.resize(1380, 850)
@@ -323,6 +390,8 @@ class CreatorWindow(QMainWindow):
         self._rebuild_tree(("library", None))
         self._update_preview()
         self._update_title()
+        self._connect_edit_tracking()
+        self._show_home()
 
     def _apply_theme(self):
         settings = load_settings()
@@ -331,16 +400,26 @@ class CreatorWindow(QMainWindow):
         if theme == "custom":
             colors = THEME_PRESETS["dark"].copy()
             colors.update(settings.get("custom_theme") or {})
-        self.setStyleSheet(_render_theme_qss(colors))
+        self.setStyleSheet(_render_theme_qss(colors) + f"""
+            QMenuBar {{ background: {colors['panel']}; color: {colors['text']}; }}
+            QMenuBar::item {{ background: transparent; padding: 5px 10px; }}
+            QMenuBar::item:selected {{ background: {colors['button_hover']}; }}
+        """ + """
+            QToolButton#creatorSectionToggle { text-align: left; border: none; padding: 4px; font-weight: 600; }
+            QLabel#creatorDocumentName { font-size: 14px; font-weight: 600; }
+            QLabel#libraryArtworkPreview { font-size: 42px; font-weight: 600; }
+            QTreeWidget#creatorProjectTree::item { padding-top: 6px; padding-bottom: 6px; }
+        """)
 
     def _build_actions(self):
         self.new_action = QAction("New project", self, shortcut=QKeySequence.New, triggered=self.new_document)
         self.open_action = QAction("Open project…", self, shortcut=QKeySequence.Open, triggered=self.open_document)
         self.save_action = QAction("Save", self, shortcut=QKeySequence.Save, triggered=self.save_document)
         self.save_as_action = QAction("Save as…", self, shortcut=QKeySequence.SaveAs, triggered=self.save_document_as)
-        self.import_folder_action = QAction("Import folder…", self, triggered=self.import_local_folder)
-        self.validate_action = QAction("Validate project", self, shortcut="F6", triggered=self.validate_current_project)
-        self.build_action = QAction("Build .odrlib…", self, shortcut="Ctrl+B", triggered=self.build_package)
+        self.import_folder_action = QAction("Add files from folder…", self, triggered=self.import_local_folder)
+        self.validate_action = QAction("Check library", self, shortcut="F6", triggered=self.validate_current_project)
+        self.build_action = QAction("Create shareable library…", self, shortcut="Ctrl+B", triggered=self.build_package)
+        self.next_revision_action = QAction("Prepare next revision", self, triggered=self.prepare_next_revision)
         self.exit_action = QAction("Exit", self, triggered=self.close)
         self.add_file_action = QAction("Add file…", self, shortcut="Ctrl+I", triggered=self.add_file)
         self.add_folder_action = QAction("Add folder", self, triggered=self.add_folder)
@@ -356,25 +435,74 @@ class CreatorWindow(QMainWindow):
         file_menu.addAction(self.exit_action)
         catalog_menu = self.menuBar().addMenu("Library")
         catalog_menu.addActions((self.add_file_action, self.add_folder_action, self.delete_action))
+        catalog_menu.addSeparator()
+        catalog_menu.addAction(self.next_revision_action)
 
     def _build_ui(self):
+        shell = QWidget()
+        shell_layout = QVBoxLayout(shell)
+        shell_layout.setContentsMargins(0, 0, 0, 0)
+        shell_layout.setSpacing(0)
+        self.setCentralWidget(shell)
+        self.workspace_header = QFrame()
+        self.workspace_header.setObjectName("sidebar")
+        header_layout = QHBoxLayout(self.workspace_header)
+        header_layout.setContentsMargins(12, 8, 16, 8)
+        home_button = QPushButton("Home")
+        home_button.setToolTip("Return home without closing this project")
+        home_button.clicked.connect(self._show_home)
+        header_layout.addWidget(home_button)
+        self.document_name = QLabel()
+        self.document_name.setObjectName("creatorDocumentName")
+        self.document_name.setTextFormat(Qt.PlainText)
+        self.document_name.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        header_layout.addWidget(self.document_name, 1)
+        self.save_state = QLabel()
+        self.save_state.setObjectName("mutedLabel")
+        header_layout.addWidget(self.save_state)
+        save_button = QPushButton("Save project")
+        save_button.clicked.connect(self.save_document)
+        header_layout.addWidget(save_button)
+        shell_layout.addWidget(self.workspace_header)
+        self.pages = QStackedWidget()
+        self.home_page = CreatorHomePage(self)
+        self.home_page.create_from_folder.connect(self.create_from_folder)
+        self.home_page.open_project.connect(self.open_document)
+        self.home_page.blank_project.connect(self.new_document)
+        self.home_page.recent_project.connect(self.open_project_path)
+        self.home_page.resume_project.connect(self._show_workspace)
+        self.pages.addWidget(self.home_page)
+        shell_layout.addWidget(self.pages, 1)
         splitter = QSplitter(Qt.Horizontal)
+        self.workspace = splitter
         splitter.setChildrenCollapsible(False)
-        self.setCentralWidget(splitter)
+        self.pages.addWidget(splitter)
 
         navigation = QFrame()
         navigation.setObjectName("sidebar")
-        navigation.setMinimumWidth(220)
-        navigation.setMaximumWidth(340)
+        navigation.setMinimumWidth(190)
+        navigation.setMaximumWidth(300)
         nav_layout = QVBoxLayout(navigation)
         nav_layout.setContentsMargins(10, 12, 10, 10)
         logo = QLabel("ODeR Creator")
         logo.setObjectName("appLogo")
         nav_layout.addWidget(logo)
-        version = QLabel(f"Library authoring · {CREATOR_VERSION}")
+        version = QLabel("PROJECT FILES")
         version.setObjectName("mutedLabel")
-        nav_layout.addWidget(version)
+        file_heading = QHBoxLayout()
+        file_heading.addWidget(version, 1)
+        add_button = QToolButton()
+        add_button.setText("+")
+        add_button.setAccessibleName("Add files or folder")
+        add_button.setToolTip("Add files or a folder")
+        add_button.setPopupMode(QToolButton.InstantPopup)
+        add_menu = QMenu(add_button)
+        add_menu.addActions((self.add_file_action, self.import_folder_action, self.add_folder_action))
+        add_button.setMenu(add_menu)
+        file_heading.addWidget(add_button)
+        nav_layout.addLayout(file_heading)
         self.tree = QTreeWidget()
+        self.tree.setObjectName("creatorProjectTree")
         self.tree.setHeaderHidden(True)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._tree_menu)
@@ -393,11 +521,11 @@ class CreatorWindow(QMainWindow):
 
         inspector = QFrame()
         inspector.setObjectName("sidebar")
-        inspector.setMinimumWidth(280)
-        inspector.setMaximumWidth(390)
+        inspector.setMinimumWidth(260)
+        inspector.setMaximumWidth(330)
         inspect_layout = QVBoxLayout(inspector)
         inspect_layout.setContentsMargins(14, 14, 14, 12)
-        heading = QLabel("Library preview")
+        heading = QLabel("Preview")
         heading.setObjectName("pageTitle")
         inspect_layout.addWidget(heading)
         self.preview_artwork = QLabel("No artwork")
@@ -417,26 +545,68 @@ class CreatorWindow(QMainWindow):
         divider.setObjectName("divider")
         divider.setFrameShape(QFrame.HLine)
         inspect_layout.addWidget(divider)
-        validation_heading = QLabel("Validation")
+        validation_heading = QLabel("LIBRARY CHECK")
         validation_heading.setObjectName("sectionLabel")
         inspect_layout.addWidget(validation_heading)
         self.validation_list = QListWidget()
         self.validation_list.setWordWrap(True)
         self.validation_list.setSelectionMode(QAbstractItemView.NoSelection)
         inspect_layout.addWidget(self.validation_list, 1)
-        validate_button = QPushButton("Validate project")
+        self.validation_list.addItem("Check your library when you’re ready to share it.")
+        validate_button = QPushButton("Check library")
         validate_button.clicked.connect(self.validate_current_project)
-        build_button = QPushButton("Build .odrlib")
+        build_button = QPushButton("Create shareable library…")
         build_button.setObjectName("accentButton")
         build_button.clicked.connect(self.build_package)
         inspect_layout.addWidget(validate_button)
         inspect_layout.addWidget(build_button)
         splitter.addWidget(inspector)
-        splitter.setSizes([260, 800, 320])
+        splitter.setSizes([230, 870, 280])
 
         status = QStatusBar()
         self.setStatusBar(status)
         self.statusBar().showMessage("Ready")
+
+    def _show_home(self):
+        self._commit_editor()
+        self.home_page.set_current_project(self.project["library"]["name"] if self._has_document else None)
+        self.home_page.refresh_recent()
+        self.pages.setCurrentWidget(self.home_page)
+        self.workspace_header.hide()
+        self._set_workspace_actions(False)
+
+    def _show_workspace(self):
+        self._has_document = True
+        self.pages.setCurrentWidget(self.workspace)
+        self.workspace_header.show()
+        self._set_workspace_actions(True)
+        self._update_title()
+
+    def _set_workspace_actions(self, enabled):
+        for action in (self.save_action, self.save_as_action, self.validate_action,
+                       self.build_action, self.add_file_action, self.add_folder_action,
+                       self.delete_action, self.next_revision_action):
+            action.setEnabled(enabled)
+
+    def _connect_edit_tracking(self):
+        # Track edits immediately, but commit the active form as a unit when
+        # saving or navigating. Loading hidden advanced fields isn't an edit.
+        for field in self.editors.findChildren(QLineEdit):
+            field.textEdited.connect(self._editor_changed)
+        for field in self.editors.findChildren(QPlainTextEdit):
+            field.textChanged.connect(self._editor_changed)
+        for field in self.editors.findChildren(QComboBox):
+            field.currentIndexChanged.connect(self._editor_changed)
+        for field in self.editors.findChildren(QSpinBox):
+            field.valueChanged.connect(self._editor_changed)
+        for field in self.editors.findChildren(QCheckBox):
+            field.toggled.connect(self._editor_changed)
+        for picker in self.editors.findChildren(PathPicker):
+            picker.edit.textChanged.connect(self._editor_changed)
+
+    def _editor_changed(self, *_args):
+        if not self._loading:
+            self._set_dirty(True)
 
     def _scroll_form(self, title_text, subtitle_text):
         page = QWidget()
@@ -459,36 +629,30 @@ class CreatorWindow(QMainWindow):
         outer.addWidget(scroll)
         return page, layout
 
-    def _card_form(self, parent_layout, title):
-        card = QFrame()
-        card.setObjectName("card")
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(16, 14, 16, 16)
-        heading = QLabel(title)
-        heading.setObjectName("cardTitle")
-        layout.addWidget(heading)
-        form = QFormLayout()
-        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        form.setVerticalSpacing(10)
-        layout.addLayout(form)
-        parent_layout.addWidget(card)
-        return form
+    def _card_form(self, parent_layout, title, *, collapsed=False, key=None):
+        section = DetailSection(title, expanded=not collapsed)
+        if key:
+            self.sections[key] = section
+        parent_layout.addWidget(section)
+        return section.form
 
     def _build_library_editor(self):
         page, layout = self._scroll_form(
-            "Library", "Describe the library, its curator, and how future revisions are published."
+            "Library", "Start with a name and cover. Add files from the Library menu or the file tree."
         )
-        form = self._card_form(layout, "Identity")
+        form = self._card_form(layout, "Library details", key="library")
         self.library_name = QLineEdit()
         self.library_version = QLineEdit()
         self.library_revision = QSpinBox()
         self.library_revision.setRange(1, 2_147_483_647)
+        self.library_revision.setToolTip("A whole number used to order updates. Use Library → Prepare next revision when publishing a new update.")
         self.library_creator = QLineEdit()
         self.library_category = QLineEdit()
         self.library_summary = QLineEdit()
         self.library_summary.setMaxLength(1000)
         self.library_description = QPlainTextEdit()
-        self.library_description.setFixedHeight(120)
+        self.library_description.setFixedHeight(90)
+        self.library_summary.setPlaceholderText("A short introduction for people browsing your library")
         self.library_tags = QLineEdit()
         self.library_tags.setPlaceholderText("Comma-separated")
         self.library_languages = QLineEdit()
@@ -502,25 +666,26 @@ class CreatorWindow(QMainWindow):
         self.library_revision.valueChanged.connect(self._update_preview)
         self.library_artwork.edit.textChanged.connect(self._update_preview)
         form.addRow("Name", self.library_name)
-        form.addRow("Version", self.library_version)
-        form.addRow("Revision", self.library_revision)
-        form.addRow("Creator / curator", self.library_creator)
-        form.addRow("Category", self.library_category)
+        form.addRow("Cover image", self.library_artwork)
         form.addRow("Summary", self.library_summary)
         form.addRow("Description", self.library_description)
-        form.addRow("Tags", self.library_tags)
-        form.addRow("Languages", self.library_languages)
-        form.addRow("Links", self.library_links)
-        form.addRow("Artwork", self.library_artwork)
+        details = self._card_form(layout, "More details · author, category and version", collapsed=True, key="details")
+        details.addRow("Author / curator", self.library_creator)
+        details.addRow("Category", self.library_category)
+        details.addRow("Tags", self.library_tags)
+        details.addRow("Public version", self.library_version)
+        details.addRow("Languages", self.library_languages)
+        details.addRow("Web links", self.library_links)
+        self.library_version.setToolTip("The version readers see, for example 1.0 or Summer 2026. Independent of the update revision number.")
 
-        rights = self._card_form(layout, "Rights and redistribution")
+        rights = self._card_form(layout, "Rights and redistribution", collapsed=True, key="rights")
         self.library_license_name = QLineEdit()
         self.library_license_url = QLineEdit()
         self.library_license_url.setPlaceholderText("Optional HTTPS license page")
         rights.addRow("Default license", self.library_license_name)
         rights.addRow("License URL", self.library_license_url)
 
-        publishing = self._card_form(layout, "Publishing and updates")
+        publishing = self._card_form(layout, "Online updates · optional", collapsed=True, key="publishing")
         self.feed_url = QLineEdit()
         self.feed_url.setPlaceholderText("https://example.org/library.odrlib-feed.json")
         self.update_channel = QComboBox()
@@ -532,11 +697,26 @@ class CreatorWindow(QMainWindow):
         self.release_notes.setPlaceholderText("Shown when this revision is offered as an update")
         self.release_notes.setFixedHeight(90)
         publishing.addRow("Update feed URL", self.feed_url)
+        publishing.addRow("Update revision", self.library_revision)
         publishing.addRow("Channel", self.update_channel)
         publishing.addRow("Package URL", self.package_url)
         publishing.addRow("Release notes", self.release_notes)
+        self.torrent_updates = QCheckBox("Share library updates through torrents (T2)")
+        self.update_torrent_url = QLineEdit()
+        self.update_torrent_url.setPlaceholderText("https://example.org/library.odrlib.torrent")
+        self.update_torrent_url.setEnabled(False)
+        self.torrent_updates.toggled.connect(self.update_torrent_url.setEnabled)
+        self.torrent_updates.toggled.connect(self._update_preview)
+        publishing.addRow("", self.torrent_updates)
+        publishing.addRow("Update torrent URL", self.update_torrent_url)
+        update_hint = QLabel("Leave this section empty for a one-off library. Torrent updates create a "
+                             "separate torrent for the .odrlib. Upload the package and update torrent, "
+                             "seed the package, then publish the feed last.")
+        update_hint.setWordWrap(True)
+        update_hint.setObjectName("mutedLabel")
+        publishing.addRow(update_hint)
 
-        torrent = self._card_form(layout, "T1 torrent sharing")
+        torrent = self._card_form(layout, "Torrent settings · advanced", collapsed=True, key="torrent")
         self.torrent_root = QLineEdit()
         self.torrent_root.setReadOnly(True)
         # The standard picker selects files, so the recursive importer normally
@@ -600,25 +780,16 @@ class CreatorWindow(QMainWindow):
         self.item_license_url = QLineEdit()
         form.addRow("Name", self.item_title)
         form.addRow("Folder", self.item_folder)
-        form.addRow("Version", self.item_version)
-        form.addRow("Creator / publisher", self.item_creator)
-        form.addRow("Category", self.item_category)
         form.addRow("Summary", self.item_summary)
-        form.addRow("Description", self.item_description)
-        form.addRow("Tags", self.item_tags)
-        form.addRow("Platform", self.item_platform)
-        form.addRow("Architecture", self.item_architecture)
-        form.addRow("Links", self.item_links)
-        form.addRow("Artwork", self.item_artwork)
-        form.addRow("License", self.item_license_name)
-        form.addRow("License URL", self.item_license_url)
 
-        source_form = self._card_form(layout, "Download source")
+        source_form = self._card_form(layout, "How people get this file")
         self.file_filename = QLineEdit()
         self.file_filename.setPlaceholderText("Displayed download filename")
         self.file_embedded = PathPicker("Choose a local source file", "All files (*)")
-        self.file_bundle = QCheckBox("Bundle this file inside the .odrlib")
-        self.file_torrent = QCheckBox("Include this file in the generated T1 torrent")
+        self.file_bundle = QCheckBox("Include a copy inside the library")
+        self.file_bundle.setToolTip("Makes the .odrlib larger, but this file works without an online source.")
+        self.file_torrent = QCheckBox("Share using a torrent")
+        self.file_torrent.setToolTip("Creates a torrent reference. Someone must seed the source files for downloads to work.")
         self.file_urls = QPlainTextEdit()
         self.file_urls.setPlaceholderText("One HTTPS URL per line\nhttps://example.org/download/file.zip")
         self.file_urls.setFixedHeight(90)
@@ -636,11 +807,24 @@ class CreatorWindow(QMainWindow):
         source_form.addRow("Local source", self.file_embedded)
         source_form.addRow("", self.file_bundle)
         source_form.addRow("", self.file_torrent)
-        source_form.addRow("HTTPS mirrors", self.file_urls)
-        source_form.addRow("Media type", self.file_media_type)
-        source_form.addRow("Expected size", self.file_size)
-        source_form.addRow("Expected SHA-256", self.file_checksum)
+        source_form.addRow("Download links", self.file_urls)
         source_form.addRow("", self.file_variant_note)
+        details = self._card_form(layout, "More file details", collapsed=True, key="file-details")
+        details.addRow("Version", self.item_version)
+        details.addRow("Author / publisher", self.item_creator)
+        details.addRow("Category", self.item_category)
+        details.addRow("Description", self.item_description)
+        details.addRow("Tags", self.item_tags)
+        details.addRow("Platform", self.item_platform)
+        details.addRow("Architecture", self.item_architecture)
+        details.addRow("Web links", self.item_links)
+        details.addRow("Cover image", self.item_artwork)
+        details.addRow("License", self.item_license_name)
+        details.addRow("License URL", self.item_license_url)
+        technical = self._card_form(layout, "Source verification · advanced", collapsed=True)
+        technical.addRow("Media type", self.file_media_type)
+        technical.addRow("Expected bytes", self.file_size)
+        technical.addRow("SHA-256", self.file_checksum)
         layout.addStretch(1)
         return page
 
@@ -777,6 +961,8 @@ class CreatorWindow(QMainWindow):
             _set_combo(self.update_channel, library["update"]["channel"])
             self.package_url.setText(self.project["publishing"]["package_url"])
             self.release_notes.setPlainText(self.project["publishing"]["release_notes"])
+            self.torrent_updates.setChecked(self.project["publishing"].get("torrent_updates", False))
+            self.update_torrent_url.setText(self.project["publishing"].get("update_torrent_url", ""))
             torrent = self.project["torrent"]
             self.torrent_root.setText(torrent.get("root_path", ""))
             self.torrent_trackers.setPlainText("\n".join(torrent.get("trackers") or []))
@@ -860,6 +1046,8 @@ class CreatorWindow(QMainWindow):
             self.project["publishing"] = {
                 "package_url": self.package_url.text().strip(),
                 "release_notes": self.release_notes.toPlainText().strip(),
+                "torrent_updates": self.torrent_updates.isChecked(),
+                "update_torrent_url": self.update_torrent_url.text().strip(),
             }
             self.project["torrent"] = {
                 "root_path": self.torrent_root.text(),
@@ -904,15 +1092,16 @@ class CreatorWindow(QMainWindow):
                 if self.file_embedded.text() and self.file_bundle.isChecked():
                     artifact["sources"].append({"type": "embedded", "source_path": self.file_embedded.text()})
                 if self.file_embedded.text() and self.file_torrent.isChecked():
+                    resolved_source = _resolve_local_source(self.file_embedded.text(), self.project_path)
                     root = self.project["torrent"].get("root_path")
                     if not root:
-                        root = os.path.dirname(os.path.abspath(self.file_embedded.text()))
+                        root = os.path.dirname(resolved_source)
                         self.project["torrent"]["root_path"] = root
                     resolved_root = root
                     if not os.path.isabs(resolved_root) and self.project_path:
                         resolved_root = os.path.join(os.path.dirname(self.project_path), resolved_root)
                     try:
-                        relative = os.path.relpath(os.path.abspath(self.file_embedded.text()), resolved_root)
+                        relative = os.path.relpath(resolved_source, resolved_root)
                     except ValueError:
                         relative = os.path.basename(self.file_embedded.text())
                     artifact["sources"].append({
@@ -949,7 +1138,10 @@ class CreatorWindow(QMainWindow):
         self._rebuild_tree(selection)
 
     def _tree_menu(self, position):
-        node = self._node_data(self.tree.itemAt(position))
+        clicked = self.tree.itemAt(position)
+        node = self._node_data(clicked)
+        if clicked and clicked.flags() & Qt.ItemIsSelectable:
+            self.tree.setCurrentItem(clicked)
         menu = QMenu(self)
         menu.addAction(self.add_file_action)
         menu.addAction(self.add_folder_action)
@@ -970,19 +1162,21 @@ class CreatorWindow(QMainWindow):
         if dialog.exec() != QDialog.Accepted:
             return
         item, folder_id = dialog.result_data()
+        self._apply_library_defaults(item, self.project["library"])
         for source in item["artifacts"][0]["sources"]:
             if source["type"] != "torrent":
                 continue
             root = self.project["torrent"].get("root_path")
+            resolved_source = _resolve_local_source(source["source_path"], self.project_path)
             if not root:
-                root = os.path.dirname(os.path.abspath(source["source_path"]))
+                root = os.path.dirname(resolved_source)
                 self.project["torrent"]["root_path"] = root
             resolved_root = root
             if not os.path.isabs(resolved_root) and self.project_path:
                 resolved_root = os.path.join(os.path.dirname(self.project_path), resolved_root)
             try:
                 source["relative_path"] = os.path.relpath(
-                    os.path.abspath(source["source_path"]), resolved_root
+                    resolved_source, resolved_root
                 ).replace("\\", "/")
             except ValueError:
                 pass
@@ -990,6 +1184,7 @@ class CreatorWindow(QMainWindow):
         self._assign_item_folder(item["id"], folder_id)
         self._set_dirty(True)
         self._rebuild_tree(("file", item["id"]))
+        self._show_workspace()
 
     def add_folder(self):
         self._commit_editor()
@@ -997,6 +1192,7 @@ class CreatorWindow(QMainWindow):
         self.project["collections"].append(collection)
         self._set_dirty(True)
         self._rebuild_tree(("folder", collection["id"]))
+        self._show_workspace()
 
     def delete_selected(self):
         kind, identifier = self._current_node
@@ -1014,8 +1210,22 @@ class CreatorWindow(QMainWindow):
         self._set_dirty(True)
         self._rebuild_tree(("library", None))
 
-    def import_local_folder(self):
+    @staticmethod
+    def _apply_library_defaults(item, library):
+        # These are initial editable values, not silently changing inheritance.
+        for key in ("creator", "category"):
+            if not item.get(key):
+                item[key] = library.get(key, "")
+        if item.get("license", {}).get("name") in (None, "", "Unknown"):
+            item["license"] = deepcopy(library.get("license") or item["license"])
+
+    def create_from_folder(self):
+        self.import_local_folder(new=True)
+
+    def import_local_folder(self, _checked=False, *, new=False):
         self._commit_editor()
+        if new and not self._confirm_discard():
+            return
         folder = QFileDialog.getExistingDirectory(self, "Import a folder of files")
         if not folder:
             return
@@ -1033,18 +1243,50 @@ class CreatorWindow(QMainWindow):
         dialog = FolderImportDialog(folder, records, self)
         if dialog.exec() != QDialog.Accepted:
             return
+        base = new_project() if new or not self._has_document else self.project
+        base_path = None if base is not self.project else self.project_path
+        if base is not self.project:
+            base["library"]["name"] = os.path.basename(os.path.normpath(folder)) or "Untitled Library"
+        existing_ids = {item["id"] for item in base["items"]}
         try:
             project, added = import_folder_selection(
-                self.project, folder, dialog.selections(), project_path=self.project_path
+                base, folder, dialog.selections(), project_path=base_path
             )
         except OdrLibError as exc:
             QMessageBox.warning(self, "Folder not imported", str(exc))
             return
-        self.project = project
         if added:
+            for item in project["items"]:
+                if item["id"] not in existing_ids:
+                    self._apply_library_defaults(item, project["library"])
+            self.project = project
+            self.project_path = base_path
+            self.validation_list.clear()
             self._set_dirty(True)
             self._rebuild_tree(("library", None))
+            self._show_workspace()
             self.statusBar().showMessage(f"Imported {format_number(added)} files from {folder}", 8000)
+
+    def prepare_next_revision(self):
+        self._commit_editor()
+        current = self.project["library"]["revision"]
+        if current >= 2_147_483_647:
+            QMessageBox.warning(self, "Revision limit reached", "This project has reached the supported revision limit.")
+            return
+        if QMessageBox.question(
+            self, "Prepare next revision",
+            f"Prepare revision {current + 1}? Your library identity and files will stay the same. "
+            "You can edit its public version and release notes before creating the update.",
+        ) != QMessageBox.Yes:
+            return
+        self.project["library"]["revision"] = current + 1
+        self.project["publishing"]["release_notes"] = ""
+        self._set_dirty(True)
+        self._rebuild_tree(("library", None))
+        self.sections["publishing"].set_expanded(True)
+        self.sections["details"].set_expanded(True)
+        self._show_workspace()
+        self.release_notes.setFocus()
 
     def _update_preview(self):
         library = self.project["library"]
@@ -1076,8 +1318,9 @@ class CreatorWindow(QMainWindow):
             1 for item in self.project["items"] for artifact in item["artifacts"]
             if any(source["type"] == "torrent" for source in artifact["sources"])
         )
-        if torrent_count:
-            extension_badges.append("T1")
+        t2 = self.torrent_updates.isChecked() if editing_library else self.project["publishing"].get("torrent_updates")
+        if torrent_count or t2:
+            extension_badges.append("T2" if t2 else "T1")
         extensions = " · ".join(extension_badges) or "Core only"
         self.preview_meta.setText(
             f"Version {preview_version or '—'} · revision {preview_revision}\n"
@@ -1091,10 +1334,10 @@ class CreatorWindow(QMainWindow):
         issues = validate_project(self.project, self.project_path)
         self.validation_list.clear()
         for issue in issues:
-            prefix = "Error" if issue.level == "error" else "Warning"
+            prefix = "Needs fixing" if issue.level == "error" else ("Suggestion" if self._optional_metadata_issue(issue) else "Check")
             self.validation_list.addItem(f"{prefix} · {issue.location}\n{issue.message}")
         if not issues:
-            self.validation_list.addItem("Ready to build\nNo problems were found.")
+            self.validation_list.addItem("Ready to share\nNo problems were found.")
             self.statusBar().showMessage("Project validation passed", 5000)
         else:
             errors = sum(issue.level == "error" for issue in issues)
@@ -1102,45 +1345,42 @@ class CreatorWindow(QMainWindow):
             self.statusBar().showMessage(f"Validation found {errors} errors and {warnings} warnings", 8000)
         return issues
 
+    @staticmethod
+    def _optional_metadata_issue(issue):
+        return issue.level == "warning" and issue.location == "Library" and issue.message in {
+            "Creator or curator is not set.", "Category is not set.",
+        }
+
     def build_package(self):
         self._commit_editor()
-        if not self.project_path and not self.save_document_as():
+        if not self.save_document():
             return
         issues = self.validate_current_project()
         if any(issue.level == "error" for issue in issues):
             QMessageBox.warning(self, "Project needs attention", "Fix the validation errors before building this library.")
             return
-        if issues:
-            if QMessageBox.question(self, "Build with warnings?", f"The project has {len(issues)} warnings. Build it anyway?") != QMessageBox.Yes:
+        warnings = [issue for issue in issues if not self._optional_metadata_issue(issue)]
+        if warnings:
+            if QMessageBox.question(self, "Create with warnings?", f"The library check found {len(warnings)} warnings. Review them in the right panel. Create it anyway?") != QMessageBox.Yes:
                 return
         suggested = os.path.join(
             os.path.dirname(self.project_path),
             "".join(character for character in self.project["library"]["name"] if character not in '<>:"/\\|?*').strip() + ".odrlib",
         )
-        destination, _selected = QFileDialog.getSaveFileName(self, "Build ODeR Library", suggested, "ODeR Libraries (*.odrlib)")
+        destination, _selected = QFileDialog.getSaveFileName(self, "Create shareable library", suggested, "ODeR Libraries (*.odrlib)")
         if not destination:
             return
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            result = build_library(self.project, destination, project_path=self.project_path)
-        except (OdrLibError, OSError) as exc:
-            QMessageBox.critical(self, "Library build failed", str(exc))
+        build = BuildProgressDialog(self.project, destination, project_path=self.project_path, parent=self)
+        if build.exec() != QDialog.Accepted:
+            QMessageBox.critical(self, "Library creation failed", str(build.error))
             return
-        finally:
-            QApplication.restoreOverrideCursor()
+        result = build.build_result
         self._last_build = result
-        message = (
-            f"Built {os.path.basename(result.path)}\n\n"
-            f"{format_number(result.package.item_count)} files · "
-            f"{format_number(result.package.collection_count)} folders · {format_bytes(result.size)}\n"
-            f"SHA-256: {result.sha256}"
-        )
-        if result.feed_path:
-            message += f"\n\nUpdate feed: {os.path.basename(result.feed_path)}"
-        if result.torrent_path:
-            message += f"\nTorrent: {os.path.basename(result.torrent_path)}"
-        QMessageBox.information(self, "ODeR Library built", message)
-        self.statusBar().showMessage(f"Built {result.path}", 10000)
+        source_folder = self.project["torrent"].get("root_path", "")
+        if source_folder and not os.path.isabs(source_folder):
+            source_folder = os.path.join(os.path.dirname(self.project_path), source_folder)
+        PublishResultDialog(result, self, source_folder=source_folder).exec()
+        self.statusBar().showMessage(f"Created {result.path}", 10000)
 
     def _set_dirty(self, value):
         self.dirty = bool(value)
@@ -1150,8 +1390,13 @@ class CreatorWindow(QMainWindow):
         name = os.path.basename(self.project_path) if self.project_path else "Untitled project"
         marker = " *" if self.dirty else ""
         self.setWindowTitle(f"{name}{marker} — {CREATOR_NAME} {CREATOR_VERSION}")
+        if hasattr(self, "document_name"):
+            self.document_name.setText(name)
+            self.document_name.setToolTip(self.project_path or name)
+            self.save_state.setText("Unsaved changes" if self.dirty else ("Saved" if self.project_path else "Not saved yet"))
 
     def _confirm_discard(self):
+        self._commit_editor()
         if not self.dirty:
             return True
         answer = QMessageBox.question(
@@ -1172,6 +1417,9 @@ class CreatorWindow(QMainWindow):
         self._set_dirty(False)
         self.validation_list.clear()
         self._rebuild_tree(("library", None))
+        self._show_workspace()
+        self.library_name.setFocus()
+        self.library_name.selectAll()
         self.statusBar().showMessage("New Creator project")
 
     def open_document(self):
@@ -1194,6 +1442,9 @@ class CreatorWindow(QMainWindow):
         self._set_dirty(False)
         self.validation_list.clear()
         self._rebuild_tree(("library", None))
+        self._show_workspace()
+        record_recent(self.project_path)
+        self.home_page.refresh_recent()
         self.statusBar().showMessage(f"Opened {self.project_path}", 7000)
         return True
 
@@ -1201,12 +1452,34 @@ class CreatorWindow(QMainWindow):
         self._commit_editor()
         if not self.project_path:
             return self.save_document_as()
+        return self._save_document_to(self.project_path)
+
+    def _save_document_to(self, path):
+        path = os.path.abspath(path)
+        snapshot = deepcopy(self.project)
+        if path != self.project_path:
+            # Resolve against the ORIGINAL project before Save As moves it.
+            # Otherwise relative artwork/payload paths point at a new folder.
+            holders = [(snapshot["library"], "artwork_path"), (snapshot["torrent"], "root_path")]
+            for item in snapshot["items"]:
+                holders.append((item, "artwork_path"))
+                for artifact in item["artifacts"]:
+                    holders.extend((source, "source_path") for source in artifact["sources"]
+                                   if source["type"] in {"embedded", "torrent"})
+            for holder, key in holders:
+                if holder.get(key):
+                    holder[key] = _resolve_local_source(holder[key], self.project_path)
         try:
-            self.project = save_project(self.project_path, self.project)
+            stored = save_project(path, snapshot)
         except (OdrLibError, OSError) as exc:
             QMessageBox.critical(self, "Project not saved", str(exc))
             return False
+        self.project = stored
+        self.project_path = path
+        self._load_editor(self._current_node)
         self._set_dirty(False)
+        record_recent(self.project_path)
+        self.home_page.refresh_recent()
         self.statusBar().showMessage(f"Saved {self.project_path}", 5000)
         return True
 
@@ -1218,8 +1491,7 @@ class CreatorWindow(QMainWindow):
             return False
         if not path.casefold().endswith(".odrproj"):
             path += ".odrproj"
-        self.project_path = os.path.abspath(path)
-        return self.save_document()
+        return self._save_document_to(path)
 
     def dragEnterEvent(self, event):
         paths = [url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()]

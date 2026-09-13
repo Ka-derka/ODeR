@@ -40,6 +40,16 @@ a = Analysis(
     excludes=[],
     noarchive=False,
 )
+# Ignore unrelated ICU DLLs found on a developer PATH (for example Poppler's
+# copy). Qt uses Windows' ICU runtime, and bundling a mismatched copy prevents
+# the packaged application from loading QtGui/QtWidgets.
+a.binaries = [
+    entry for entry in a.binaries
+    if not (
+        entry[0].lower() in {"icuuc.dll", "icudt78.dll"}
+        and "pyside6" not in str(entry[1]).lower()
+    )
+]
 pyz = PYZ(a.pure)
 
 exe = EXE(

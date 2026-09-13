@@ -6,7 +6,7 @@ import re
 
 APP_NAME = "ODeR"
 CREATOR_NAME = "ODeR Creator"
-APP_VERSION = "1.1.0-alpha.3"
+APP_VERSION = "1.1.0-beta.1"
 CREATOR_VERSION = "2026.0.2a"
 
 

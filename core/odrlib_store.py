@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import base64
 import hashlib
 import json
 import os
@@ -17,6 +18,7 @@ from core.odrlib import (
     inspect_library, inspect_update_feed,
 )
 from core.paths import profile_dir
+from core.persistence import load_json, save_json
 from core.profiles import (
     DEFAULT_SETTINGS, create_imported_profile, get_profile, load_profiles,
     update_profile,
@@ -203,6 +205,10 @@ def import_library(path, *, conflict_policy="error", replace_profile_id=None):
         profile_id = uuid.uuid4().hex[:12]
 
     destination = _package_path(profile_id)
+    if replacing:
+        # Keep metainfo receipts, not old multi-gigabyte packages. Queued files
+        # and seeds still need their original swarm after a catalog update.
+        _retain_torrent_receipts(target)
     _copy_verified(os.path.abspath(path), destination)
     installed = inspect_library(destination, verify_hashes=False)
     artwork_path = _extract_artwork(installed, profile_id)
@@ -294,6 +300,33 @@ def extract_embedded(profile, source, destination):
     return {"path": destination, "size": size, "sha256": expected_hash}
 
 
+def _receipt_path(profile, source):
+    key = hashlib.sha256(str(source.get("torrent_id") or "").encode("utf-8")).hexdigest()
+    return os.path.join(profile_dir(profile["id"]), "torrent-history", key + ".json")
+
+
+def _retain_torrent_receipts(profile):
+    info = load_profile_package(profile)
+    groups = {}
+    for item in info.items:
+        for artifact in item.get("artifacts") or []:
+            for source in artifact.get("sources") or []:
+                if source.get("type") == "torrent":
+                    groups.setdefault(source["torrent_id"], []).append(source)
+    with zipfile.ZipFile(info.path) as archive:
+        for sources in groups.values():
+            data = archive.read(sources[0]["metainfo_path"])
+            save_json(_receipt_path(profile, sources[0]), {
+                "library_id": info.library_id, "sources": sources,
+                "data": base64.b64encode(data).decode("ascii"),
+                "sha256": hashlib.sha256(data).hexdigest(),
+            }, backup=False)
+
+
+def _matches_torrent_source(candidate, source):
+    return all(candidate.get(key) == source.get(key) for key in ("torrent_id", "file_index", "sha256"))
+
+
 def torrent_metainfo(profile, source):
     """Return validated metainfo for one installed T1 catalog source."""
     info = load_profile_package(profile)
@@ -303,12 +336,22 @@ def torrent_metainfo(profile, source):
             for candidate in artifact.get("sources") or []:
                 if (
                         candidate.get("type") == "torrent"
-                        and candidate.get("torrent_id") == (source or {}).get("torrent_id")
-                        and candidate.get("file_index") == (source or {}).get("file_index")
-                        and candidate.get("sha256") == (source or {}).get("sha256")):
+                        and _matches_torrent_source(candidate, source or {})):
                     selected = candidate
                     break
     if not selected:
+        receipt = load_json(_receipt_path(profile, source or {}), {}, expected_type=dict)
+        if receipt.get("library_id") == info.library_id:
+            selected = next((candidate for candidate in receipt.get("sources", [])
+                             if _matches_torrent_source(candidate, source or {})), None)
+            if selected:
+                try:
+                    data = base64.b64decode(receipt["data"], validate=True)
+                    if hashlib.sha256(data).hexdigest() != receipt["sha256"]:
+                        raise ValueError("checksum mismatch")
+                except (ValueError, KeyError) as exc:
+                    raise OdrLibError("Retained torrent metadata failed its integrity check.") from exc
+                return {"data": data, "source": selected, "package": info}
         raise OdrLibError("The selected torrent source is not declared by this library.")
     member_path = selected.get("metainfo_path")
     try:
@@ -365,7 +408,7 @@ def check_for_update(profile, session=None):
     return feed if feed.revision > int(stored.get("revision") or 0) else None
 
 
-def download_update(profile, feed: UpdateFeedInfo, session=None):
+def download_update(profile, feed: UpdateFeedInfo, session=None, *, prefer_torrent=False):
     if not isinstance(feed, UpdateFeedInfo):
         raise OdrLibError("The library update information is invalid.")
     stored = (profile or {}).get("odrlib") or {}
@@ -383,6 +426,20 @@ def download_update(profile, feed: UpdateFeedInfo, session=None):
     digest = hashlib.sha256()
     size = 0
     try:
+        if prefer_torrent and feed.torrent:
+            from core.torrent_updates import receive_package
+            try:
+                receive_package(feed, temporary, session)
+                if os.path.getsize(temporary) != feed.size or _sha256_file(temporary) != feed.sha256:
+                    raise OdrLibError("The torrent package failed its size or SHA-256 check.")
+            except Exception as exc:
+                from core import applog
+                applog.log(f"Torrent library update unavailable; using HTTPS: {exc}")
+            else:
+                package = inspect_library(temporary, verify_hashes=True)
+                if package.library_id != feed.library_id or package.revision != feed.revision:
+                    raise OdrLibError("The downloaded package does not match its update feed.")
+                return import_library(temporary, conflict_policy="replace", replace_profile_id=profile["id"])
         response = None
         try:
             response = session.get(

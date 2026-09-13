@@ -4,6 +4,9 @@
 #define MyAppVersion "2026.0.2a"
 #define MyBuildExeName "ODeR Creator.exe"
 #define MyAppExeName "ODeR Creator.exe"
+#ifndef CreatorBuildDir
+  #define CreatorBuildDir "dist"
+#endif
 
 [Setup]
 AppId={{D8C0F60B-AB9E-4D91-90AA-0BD000000002}
@@ -28,7 +31,7 @@ CloseApplications=yes
 RestartApplications=no
 
 [Files]
-Source: "dist\{#MyBuildExeName}"; DestDir: "{app}"; DestName: "{#MyAppExeName}"; Flags: ignoreversion
+Source: "{#CreatorBuildDir}\{#MyBuildExeName}"; DestDir: "{app}"; DestName: "{#MyAppExeName}"; Flags: ignoreversion
 Source: "LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 Source: "THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 

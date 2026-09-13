@@ -6,7 +6,6 @@ clear errors if a third-party build is missing the optional runtime.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 import os
 from pathlib import PurePosixPath
 
@@ -45,16 +44,138 @@ def _safe_relative(value):
     return path.as_posix()
 
 
+def _canonicalize_generated_hybrid(document):
+    """Keep generated v1 piece spans in the same order as the BEP52 tree.
+
+    Some libtorrent builders sort full paths, but v2 dictionaries sort each
+    path component. For example a-/x precedes a/x in a flat string sort, while
+    the v2 tree visits a first. That produces error 213 even with create_file_entry.
+    Each generated file is piece-aligned and padded: move its ENTIRE v1 piece
+    span with its file/padding records. Never reorder filenames alone, and never
+    apply this to imported torrents (it changes the v1 info hash).
+    """
+    info = document.get(b"info", {})
+    files = info.get(b"files")
+    if info.get(b"meta version") != 2 or not isinstance(files, list) or b"pieces" not in info:
+        return document
+    piece_length = info[b"piece length"]
+    pieces = info[b"pieces"]
+    groups = []
+    offset = 0
+    for entry in files:
+        length = entry[b"length"]
+        if b"p" in entry.get(b"attr", b""):
+            if not groups:
+                raise TorrentSupportError("Generated hybrid torrent starts with unexpected padding.")
+            groups[-1]["entries"].append(entry)
+        else:
+            groups.append({"key": tuple(entry[b"path"]), "start": offset, "entries": [entry]})
+        offset += length
+        groups[-1]["end"] = offset
+    ordered = sorted(groups, key=lambda group: group["key"])
+    if [g["key"] for g in groups] == [g["key"] for g in ordered]:
+        return document
+    if (piece_length < 16384 or piece_length & (piece_length - 1)
+            or len(pieces) != ((offset + piece_length - 1) // piece_length) * 20
+            or any(g["start"] % piece_length or g["end"] % piece_length for g in groups)):
+        raise TorrentSupportError("Cannot safely canonicalize the generated hybrid torrent's piece alignment.")
+    info[b"files"] = [entry for group in ordered for entry in group["entries"]]
+    info[b"pieces"] = b"".join(
+        pieces[g["start"] // piece_length * 20:g["end"] // piece_length * 20] for g in ordered
+    )
+    return document
+
+
+def _source_stamp(path):
+    stat = os.stat(path)
+    return (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_dev, stat.st_ino)
+
+
+def _create_hybrid_metainfo(root_parent, records, *, trackers=(), web_seeds=(), private=False,
+                            creator="ODeR Creator", comment="", piece_size=0, progress=None,
+                            purpose="catalog payload"):
+    """Shared generation boundary for payload and package-update torrents."""
+    lt = _libtorrent()
+    stage = "reading source files"
+    size = 0
+    snapshots = []
+    try:
+        storage = lt.file_storage()
+        entry_type = getattr(lt, "create_file_entry", None)
+        entries = [] if callable(entry_type) else None
+        expected = {}
+        for record in records:
+            source = record["source_path"]
+            name = record["torrent_path"]
+            stamp = _source_stamp(source)
+            snapshots.append((source, stamp))
+            expected[name] = stamp[0]
+            storage.add_file(name, stamp[0])
+            if entries is not None:
+                try:
+                    entries.append(entry_type(name, stamp[0]))
+                except (TypeError, ValueError):
+                    entries = None  # Older Monterey-compatible Python binding.
+        if not snapshots:
+            raise TorrentSupportError("Select at least one file for the torrent.")
+        if not any(stamp[0] for _path, stamp in snapshots):
+            raise TorrentSupportError("A torrent needs at least one non-empty file. Empty files can still be bundled in the library.")
+        stage = "creating file layout"
+        size = max(0, int(piece_size or 0))
+        builder = lt.create_torrent(entries if entries is not None else storage, size)
+        size = int(builder.piece_length())
+        for tier, url in enumerate(trackers):
+            builder.add_tracker(str(url), tier)
+        for url in web_seeds:
+            builder.add_url_seed(str(url))
+        builder.set_priv(bool(private))
+        if creator:
+            builder.set_creator(str(creator))
+        if comment:
+            builder.set_comment(str(comment))
+        stage = "hashing source files"
+        lt.set_piece_hashes(builder, root_parent, progress if callable(progress) else (lambda _piece: None))
+        stage = "checking source stability"
+        for path, stamp in snapshots:
+            if _source_stamp(path) != stamp:
+                raise TorrentSupportError(f"Source file changed during hashing: {os.path.basename(path)}. Stop editing or downloading it and try again.")
+        stage = "validating generated metadata"
+        document = _canonicalize_generated_hybrid(builder.generate())
+        data = bytes(lt.bencode(document))
+        metadata = inspect_metainfo(data)
+        actual = {f["path"]: f["size"] for f in metadata["files"]}
+        if actual != expected or len(metadata["files"]) != len(records):
+            raise TorrentSupportError("The generated torrent did not preserve every selected file path and size.")
+        if not metadata["info_hash_v1"] or not metadata["info_hash_v2"]:
+            raise TorrentSupportError("The generated torrent did not preserve hybrid v1/v2 support.")
+        return data
+    except Exception as exc:
+        empty = sum(stamp[0] == 0 for _path, stamp in snapshots)
+        raise TorrentSupportError(
+            f"Torrent creation failed for {purpose} while {stage} "
+            f"(libtorrent {getattr(lt, '__version__', 'unknown')}; {len(records)} files, "
+            f"{empty} empty; piece size {size or 'automatic'}): {exc}"
+        ) from exc
+
+
+def create_package_metainfo(package_path, *, trackers=(), private=False, creator="ODeR Creator"):
+    package_path = os.path.abspath(package_path)
+    return _create_hybrid_metainfo(
+        os.path.dirname(package_path),
+        [{"source_path": package_path, "torrent_path": os.path.basename(package_path)}],
+        trackers=trackers, private=private, creator=creator, purpose="library package update",
+    )
+
+
 def create_metainfo(
         root_path, files, *, trackers=(), web_seeds=(), private=False,
         creator="ODeR Creator", comment="", piece_size=0, progress=None):
     """Create one hybrid v1/v2 torrent from selected files below *root_path*.
 
     ``files`` contains dictionaries with ``source_path`` and ``relative_path``.
-    Their order is retained and returned from :func:`inspect_metainfo` as the
-    stable T1 file index mapping.
+    Libtorrent may put those files into canonical torrent order, so callers
+    must use the paths returned by :func:`inspect_metainfo` for file indices.
     """
-    lt = _libtorrent()
     root_path = os.path.abspath(root_path)
     if not os.path.isdir(root_path):
         raise TorrentSupportError("The torrent source folder no longer exists.")
@@ -62,7 +183,7 @@ def create_metainfo(
     if not root_name:
         raise TorrentSupportError("The torrent source folder needs a usable name.")
     root_parent = os.path.dirname(root_path)
-    storage = lt.file_storage()
+    prepared = []
     seen = set()
     for record in files:
         relative = _safe_relative(record.get("relative_path"))
@@ -80,29 +201,11 @@ def create_metainfo(
             raise TorrentSupportError(f"Torrent source does not match its folder path: {relative}")
         if not os.path.isfile(source):
             raise TorrentSupportError(f"Torrent source file was not found: {relative}")
-        stat = os.stat(source)
-        storage.add_file(f"{root_name}/{relative}", stat.st_size, 0, int(stat.st_mtime))
-    if storage.num_files() == 0:
-        raise TorrentSupportError("Select at least one file for the torrent.")
-    try:
-        size = max(0, int(piece_size or 0))
-        builder = lt.create_torrent(storage, size) if size else lt.create_torrent(storage)
-        for tier, url in enumerate(trackers):
-            builder.add_tracker(str(url), tier)
-        for url in web_seeds:
-            builder.add_url_seed(str(url))
-        builder.set_priv(bool(private))
-        if creator:
-            builder.set_creator(str(creator))
-        if comment:
-            builder.set_comment(str(comment))
-        callback = progress if callable(progress) else (lambda _piece: None)
-        lt.set_piece_hashes(builder, root_parent, callback)
-        return bytes(lt.bencode(builder.generate()))
-    except TorrentSupportError:
-        raise
-    except Exception as exc:
-        raise TorrentSupportError(f"Torrent creation failed: {exc}") from exc
+        torrent_path = f"{root_name}/{relative}"
+        prepared.append({"source_path": source, "torrent_path": torrent_path})
+    return _create_hybrid_metainfo(root_parent, prepared, trackers=trackers, web_seeds=web_seeds,
+                                  private=private, creator=creator, comment=comment,
+                                  piece_size=piece_size, progress=progress)
 
 
 def inspect_metainfo(data):

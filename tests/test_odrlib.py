@@ -12,6 +12,7 @@ from core.odrlib import (
     save_project, validate_project,
 )
 from core.version import APP_VERSION, CREATOR_VERSION
+from core.torrent_support import create_metainfo, inspect_metainfo
 
 
 PNG_1X1 = (
@@ -199,6 +200,27 @@ class OdrLibTests(unittest.TestCase):
             self.assertTrue(all("/.pad/" not in source["path"] for source in sources))
             self.assertGreater(max(source["file_index"] for source in sources), 11)
 
+    def test_t1_large_interleaved_folder_tree_has_consistent_hybrid_metadata(self):
+        with tempfile.TemporaryDirectory() as root:
+            records = []
+            for index in range(179):
+                folder = os.path.join(root, f"folder{index % 27}")
+                os.makedirs(folder, exist_ok=True)
+                path = os.path.join(folder, f"file{index:03}.bin")
+                with open(path, "wb") as handle:
+                    handle.write(bytes([index % 251 + 1]) * (index % 17 + 1))
+                records.append({
+                    "source_path": path,
+                    "relative_path": os.path.relpath(path, root).replace("\\", "/"),
+                })
+
+            metadata = inspect_metainfo(create_metainfo(root, records, piece_size=16 * 1024))
+
+            self.assertEqual(len(metadata["files"]), 179)
+            self.assertTrue(metadata["info_hash_v1"])
+            self.assertTrue(metadata["info_hash_v2"])
+            self.assertEqual(len({record["file_index"] for record in metadata["files"]}), 179)
+
     def test_future_optional_t_extension_uses_recognized_fallback(self):
         with tempfile.TemporaryDirectory() as root:
             payload = os.path.join(root, "file.bin")
@@ -213,10 +235,10 @@ class OdrLibTests(unittest.TestCase):
             self._rewrite_manifest(
                 source,
                 future,
-                lambda manifest: manifest["extensions"]["optional"][0].update(version=2),
+                lambda manifest: manifest["extensions"]["optional"][0].update(version=99),
             )
             inspected = inspect_library(future)
-            self.assertEqual([extension.badge for extension in inspected.extensions], ["T2"])
+            self.assertEqual([extension.badge for extension in inspected.extensions], ["T99"])
             self.assertEqual(
                 [source["type"] for source in inspected.items[0]["artifacts"][0]["sources"]],
                 ["embedded"],

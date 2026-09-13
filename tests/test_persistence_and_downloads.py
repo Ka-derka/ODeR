@@ -171,6 +171,128 @@ class PersistenceAndDownloadTests(unittest.TestCase):
         self.assertEqual(stored["result"], "existing")
         self.assertEqual(stored["bytes_done"], 8)
 
+    def test_existing_library_download_is_found_by_source_and_in_normal_folder(self):
+        root = os.path.join(self.temp.name, "downloads")
+        settings = {"download_dir": root}
+        with patch.object(downloader, "load_settings", return_value=settings):
+            first = downloader.enqueue(
+                "p", "Library", "https://one.test/file.bin", "file.bin", "Folder"
+            )
+            second = downloader.enqueue(
+                "p", "Library", "https://two.test/file.bin", "file.bin", "Folder"
+            )
+            second_path = downloader._dest_path(second, create=True)
+            with open(second_path, "wb") as handle:
+                handle.write(b"downloaded")
+            found = downloader.find_existing_download(
+                "p", "Library", [{"type": "https", "url": "https://two.test/file.bin"}],
+                "file.bin", "Folder", 10,
+            )
+            self.assertEqual(found, second_path)
+
+            os.remove(second_path)
+            canonical = downloader.destination_preview("Library", "Folder", "file.bin")
+            os.makedirs(os.path.dirname(canonical), exist_ok=True)
+            with open(canonical, "wb") as handle:
+                handle.write(b"local")
+            found = downloader.find_existing_download(
+                "p", "Library", [], "file.bin", "Folder", 5,
+            )
+            self.assertEqual(found, canonical)
+            self.assertNotEqual(first["destination_rel_path"], second["destination_rel_path"])
+
+            downloader.save_queue([])
+            os.remove(canonical)
+            collision_only = os.path.join(os.path.dirname(canonical), "file (2).bin")
+            with open(collision_only, "wb") as handle:
+                handle.write(b"local")
+            found = downloader.find_existing_download(
+                "p", "Library", [], "file.bin", "Folder", 5,
+            )
+            self.assertEqual(found, collision_only)
+
+    def test_torrent_publish_keeps_private_payload_for_seeding(self):
+        source = os.path.join(self.temp.name, "staging", "payload.bin")
+        destination = os.path.join(self.temp.name, "downloads", "payload.bin")
+        os.makedirs(os.path.dirname(source), exist_ok=True)
+        with open(source, "wb") as handle:
+            handle.write(b"seed me")
+        downloader._publish_torrent_payload(source, destination)
+        self.assertTrue(os.path.isfile(source))
+        with open(destination, "rb") as handle:
+            self.assertEqual(handle.read(), b"seed me")
+
+    def test_removing_seeding_entry_stops_seed_but_keeps_download(self):
+        root = os.path.join(self.temp.name, "downloads")
+        source = {
+            "type": "torrent", "torrent_id": "3138b358-6e67-4217-b70b-dd0fe7871ed8",
+            "file_index": 0, "path": "Library/file.bin", "size": 7,
+        }
+        with patch.object(downloader, "load_settings", return_value={"download_dir": root}):
+            item = downloader.enqueue_torrent("p", "Library", source, "file.bin", "")
+            destination = downloader._dest_path(item, create=True)
+            with open(destination, "wb") as handle:
+                handle.write(b"seed me")
+            staging = downloader._torrent_staging_path(item)
+            payload = downloader._torrent_payload_path(staging, source["path"])
+            os.makedirs(os.path.dirname(payload), exist_ok=True)
+            with open(payload, "wb") as handle:
+                handle.write(b"seed me")
+            downloader.update_item(
+                item["id"], status="seeding", seed_ready=True,
+                seed_payload_rel=source["path"], bytes_done=7, bytes_total=7,
+            )
+            downloader.remove_item(item["id"])
+            self.assertEqual(downloader.load_queue(), [])
+            self.assertTrue(os.path.isfile(destination))
+            self.assertFalse(os.path.exists(staging))
+
+    def test_seeding_downloads_count_as_finished_and_clear_stops_them(self):
+        item = downloader.enqueue("p", "Library", "https://x/file", "file", "")
+        downloader.update_item(item["id"], status="seeding", bytes_done=10, bytes_total=10)
+        summary = downloader.summarize_group_items(downloader.load_queue())
+        self.assertEqual(summary["completed"], 1)
+        self.assertEqual(summary["percent"], 100)
+        self.assertEqual(downloader.clear_completed(), 1)
+        self.assertEqual(downloader.load_queue(), [])
+
+    def test_completed_torrent_seed_is_restored_from_visible_download(self):
+        root = os.path.join(self.temp.name, "downloads")
+        source = {
+            "type": "torrent", "torrent_id": "3138b358-6e67-4217-b70b-dd0fe7871ed8",
+            "file_index": 0, "path": "Torrent/file.bin", "size": 7,
+        }
+        settings = {"download_dir": root, "torrent_enabled": True}
+        with patch.object(downloader, "load_settings", return_value=settings):
+            item = downloader.enqueue_torrent("p", "Library", source, "file.bin", "")
+            destination = downloader._dest_path(item, create=True)
+            with open(destination, "wb") as handle:
+                handle.write(b"seed me")
+            downloader.update_item(item["id"], status="done", bytes_done=7, bytes_total=7)
+
+            files = types.SimpleNamespace(
+                file_path=lambda _index: source["path"],
+                file_size=lambda _index: source["size"],
+            )
+            info = types.SimpleNamespace(num_files=lambda: 1, files=lambda: files)
+            with (
+                patch.object(downloader, "get_profile", return_value={"id": "p", "kind": "odrlib"}),
+                patch("core.odrlib_store.torrent_metainfo", return_value={"data": b"torrent"}),
+                patch("core.torrent_support.binding", return_value=types.SimpleNamespace()),
+                patch("core.torrent_support.torrent_info", return_value=info),
+                patch.object(downloader, "_ensure_torrent_handle") as ensure_handle,
+            ):
+                self.assertTrue(downloader._restore_torrent_seed(item, lambda _message: None))
+
+            restored = downloader.load_queue()[0]
+            self.assertEqual(restored["status"], "seeding")
+            self.assertTrue(restored["seed_ready"])
+            seed_payload = downloader._torrent_payload_path(
+                downloader._torrent_staging_path(restored), source["path"]
+            )
+            self.assertTrue(os.path.isfile(seed_payload))
+            ensure_handle.assert_called_once()
+
     def test_source_relative_directory_rejects_other_origins_and_siblings(self):
         base = "https://example.test/media/"
         self.assertEqual(

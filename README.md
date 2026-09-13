@@ -4,11 +4,11 @@
 
 ODeR is a PySide6 desktop application for indexing web directory listings, browsing the cached tree offline, tracking changes, and downloading selected files. Each tracked location appears as a library with its own crawl and download settings, while the local SQLite index remains fast enough for large archives.
 
-Current version: **1.1.0-alpha.3**
+Current version: **1.1.0-beta.1**
 
 Current Creator version: **2026.0.2a**
 
-ODeR 1.1.0 Alpha 3 can install and browse Creator-built `.odrlib` v1 catalogs, use bundled, HTTPS, or T1 torrent file sources, and safely apply curator-published U1 library updates. ODeR Creator keeps its independent calendar-style version line for the curator workstation.
+ODeR 1.1.0 Beta 1 can install and browse Creator-built `.odrlib` v1 catalogs, use bundled, HTTPS, or T1 torrent file sources, keep completed T1 downloads seeding, open existing local library files without duplicate queue jobs, and safely apply curator-published U1 library updates. ODeR Creator keeps its independent calendar-style version line for the curator workstation.
 
 ## Highlights
 
@@ -22,6 +22,8 @@ ODeR 1.1.0 Alpha 3 can install and browse Creator-built `.odrlib` v1 catalogs, u
 - Manage libraries from responsive Home tiles with settings, information, and export actions in each tile's menu.
 - Give libraries portable artwork, descriptions, creator/curator credits, categories, and tags.
 - Import, browse, search, update, and download from checksum-verified `.odrlib` v1 catalogs made by ODeR Creator.
+- Keep verified T1 downloads seeding while their finished entries remain in Downloads, including after restarting ODeR; removing an entry stops its seed without deleting the downloaded file.
+- Open an already-downloaded curated-library file directly, whether its completed Downloads record remains or only the structured file remains on disk.
 - Author `.odrproj` workspaces in the separate ODeR Creator application and export `.odrlib` v1 catalogs with folders, optional bundles, HTTPS mirrors, U1 update feeds, and T1 torrents.
 - Export either a complete library or a selected subtree.
 - Manage, repair, compact, or clear cached indexes without touching downloads.
@@ -35,7 +37,7 @@ ODeR 1.1.0 Alpha 3 can install and browse Creator-built `.odrlib` v1 catalogs, u
 ## Requirements
 
 - Python 3.11 or newer
-- PySide6 6.6 or newer
+- PySide6 6.11.2 (6.9.3 for the macOS compatibility build)
 - Requests 2.31 or newer
 - libtorrent 2.1.1
 
@@ -94,7 +96,7 @@ The script creates Intel x64 `ODeR.app` and `ODeR Creator.app` bundles compatibl
 
 Installed builds can check GitHub for stable or preview releases from **Settings → Application updates**. ODeR checks at most once per day when automatic checks are enabled, and manual **Check now** and **View releases** actions are always available. Update checks send only the normal GitHub request and ODeR version user-agent; local directory URLs, searches, downloads, and usage data are not sent.
 
-ODeR scans recent published releases and selects the newest compatible download, so a malformed tag or incomplete release does not block valid updates. It understands semantic prereleases and legacy calendar-style tags. Stable-channel users do not receive prereleases; testers can select the Preview channel for versions such as `1.1.0-alpha.3`.
+ODeR scans recent published releases and selects the newest compatible download, so a malformed tag or incomplete release does not block valid updates. It understands semantic prereleases and legacy calendar-style tags. Stable-channel users do not receive prereleases; testers can select the Preview channel for versions such as `1.1.0-beta.1`.
 
 The updater streams the Windows installer or macOS DMG into ODeR's user-data update folder and verifies its SHA-256 digest before offering to open it. GitHub's asset digest is preferred, with `SHA256SUMS.txt` as a fallback. Downloads are checked for expected size, available disk space, file type, and trusted HTTPS origin. Failed partials are removed, while an already downloaded and verified update can be safely reused. On Windows, installation can wait until crawls and downloads become idle; on macOS, ODeR opens the verified disk image and explains how to replace the application.
 

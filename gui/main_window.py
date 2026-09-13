@@ -846,7 +846,7 @@ class SettingsPage(QWidget):
         self.torrent_connections=QSpinBox(); self.torrent_connections.setRange(10,1000); self.torrent_connections.setValue(int(self._settings.get('torrent_connections_limit',80))); tf.addRow('Peer limit per job',self.torrent_connections)
         self.torrent_download_limit=QSpinBox(); self.torrent_download_limit.setRange(0,10_000_000); self.torrent_download_limit.setSuffix(' KiB/s'); self.torrent_download_limit.setSpecialValueText('Unlimited'); self.torrent_download_limit.setValue(int(self._settings.get('torrent_download_limit_kib',0))); tf.addRow('Download limit per job',self.torrent_download_limit)
         self.torrent_upload_limit=QSpinBox(); self.torrent_upload_limit.setRange(0,10_000_000); self.torrent_upload_limit.setSuffix(' KiB/s'); self.torrent_upload_limit.setSpecialValueText('Unlimited'); self.torrent_upload_limit.setValue(int(self._settings.get('torrent_upload_limit_kib',0))); tf.addRow('Upload limit per job',self.torrent_upload_limit)
-        torrent_hint=QLabel('Torrent jobs never start when a library is imported. ODeR fetches only the file you choose, verifies its declared size and SHA-256, and stops the torrent after completion. DHT and local discovery expose the torrent info hash and your peer address to other participants.'); torrent_hint.setObjectName('mutedLabel'); torrent_hint.setWordWrap(True); tf.addRow('',torrent_hint)
+        torrent_hint=QLabel('Torrent jobs never start when a library is imported. ODeR fetches only the file you choose, verifies its declared size and SHA-256, then keeps that completed Downloads entry seeding. Remove the entry from Downloads to stop seeding; the visible downloaded file is kept. DHT and local discovery expose the torrent info hash and your peer address to other participants.'); torrent_hint.setObjectName('mutedLabel'); torrent_hint.setWordWrap(True); tf.addRow('',torrent_hint)
         form.addWidget(torrents)
 
         appearance=CollapsibleSection("Appearance", "built-in themes and a visual custom palette", False, layout_type="form"); af=appearance.body_layout
@@ -1952,9 +1952,15 @@ class MainWindow(QMainWindow):
         except (OSError, ValueError):
             items = []
         active = sum(1 for item in items if item.get("status") in {"pending", "downloading"})
-        failed = sum(1 for item in items if item.get("status") == "failed")
-        self.status_downloads_btn.setText(f"Downloads · {active}" if active else "Downloads")
+        seeding = sum(1 for item in items if item.get("status") == "seeding")
+        failed = sum(1 for item in items if item.get("status") == "error")
+        visible_count = active + seeding
+        self.status_downloads_btn.setText(
+            f"Downloads · {visible_count}" if visible_count else "Downloads"
+        )
         details = [f"{active} queued or active" if active else "No active downloads"]
+        if seeding:
+            details.append(f"{seeding} seeding")
         if failed:
             details.append(f"{failed} failed")
         self.status_downloads_btn.setToolTip("Open downloads — " + ", ".join(details))
@@ -2277,6 +2283,10 @@ class MainWindow(QMainWindow):
         if key not in self._pages:
             if profile.get("kind") == "odrlib":
                 browser = OdrLibBrowserWidget()
+                browser.set_existing_path_resolver(
+                    lambda request, pid=profile_id: self._existing_odrlib_download(pid, request)
+                )
+                browser.open_requested.connect(self._open_downloaded_library_file)
                 browser.set_profile(profile)
                 browser.download_requested.connect(
                     lambda request, pid=profile_id: self._download_odrlib_source(pid, request)
@@ -2773,19 +2783,60 @@ class MainWindow(QMainWindow):
             f"{format_number(result.package.collection_count)} folders",
         )
 
+    @staticmethod
+    def _odrlib_download_details(request):
+        item = request.get("item") or {}
+        artifact = request.get("artifact") or {}
+        sources = list(artifact.get("sources") or [])
+        selected_source = request.get("source") or {}
+        naming_source = selected_source or next(
+            (source for source in sources if source.get("path")), {}
+        )
+        filename = (
+            artifact.get("filename") or os.path.basename(naming_source.get("path") or "")
+            or artifact.get("name") or item.get("title") or "download"
+        )
+        folder = request.get("folder") or ""
+        expected_size = artifact.get("size")
+        if expected_size is None:
+            expected_size = naming_source.get("size")
+        return filename, folder, expected_size, sources
+
+    def _existing_odrlib_download(self, profile_id, request):
+        profile = get_profile(profile_id)
+        if not profile or profile.get("kind") != "odrlib":
+            return None
+        filename, folder, expected_size, sources = self._odrlib_download_details(request)
+        return downloader.find_existing_download(
+            profile_id, profile["name"], sources, filename, folder, expected_size
+        )
+
+    def _open_downloaded_library_file(self, path):
+        if not path or not os.path.isfile(path):
+            QMessageBox.warning(self, "File unavailable", "The downloaded file is no longer available.")
+            return False
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(path)):
+            QMessageBox.warning(
+                self, "Could not open file",
+                "No application accepted this file. You can open it from the Downloads page instead."
+            )
+            return False
+        self.statusBar().showMessage(f"Opened {os.path.basename(path)}", 7000)
+        return True
+
     def _download_odrlib_source(self, profile_id, request):
         profile = get_profile(profile_id)
         if not profile or profile.get("kind") != "odrlib":
             QMessageBox.warning(self, "Library unavailable", "That curated library is no longer installed.")
             return
+        existing = self._existing_odrlib_download(profile_id, request)
+        if existing:
+            self._open_downloaded_library_file(existing)
+            return
         item = request.get("item") or {}
         artifact = request.get("artifact") or {}
         source = request.get("source") or {}
-        filename = (
-            artifact.get("filename") or os.path.basename(source.get("path") or "")
-            or artifact.get("name") or item.get("title") or "download"
-        )
-        folder = request.get("folder") or ""
+        filename, folder, _expected_size, _sources = self._odrlib_download_details(request)
         if source.get("type") == "https":
             downloader.enqueue(profile_id, profile["name"], source.get("url"), filename, folder)
             self._show_special("downloads")
@@ -2811,9 +2862,7 @@ class MainWindow(QMainWindow):
             return
         destination = downloader.destination_preview(profile["name"], folder, filename)
         if os.path.isfile(destination) and load_settings().get("skip_existing_downloads", True):
-            QMessageBox.information(
-                self, "File already downloaded", f"The existing file was kept.\n\n{destination}"
-            )
+            self._open_downloaded_library_file(destination)
             return
         self._start_package_task(
             f"Extracting and verifying {filename}…",
@@ -2859,17 +2908,25 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Library is current", "The installed library is already up to date.")
             return
         notes = f"\n\n{feed.release_notes}" if feed.release_notes else ""
-        answer = QMessageBox.question(
-            self,
-            "Curated library update available",
-            f"Update {profile['name']} to {feed.version or f'revision {feed.revision}'}?\n"
-            f"Download size: {format_bytes(feed.size)}{notes}",
-        )
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Curated library update available")
+        dialog.setTextFormat(Qt.PlainText)
+        dialog.setText(f"Update {profile['name']} to {feed.version or f'revision {feed.revision}'}?\n"
+                       f"Download size: {format_bytes(feed.size)}{notes}")
+        dialog.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        dialog.setDefaultButton(QMessageBox.No)
+        torrent_choice = None
+        if feed.torrent and load_settings().get("torrent_enabled", True):
+            torrent_choice = QCheckBox("Get the update from peers (HTTPS fallback)", dialog)
+            torrent_choice.setToolTip("Peers can see your IP address. If the transfer stalls, ODeR uses HTTPS.")
+            dialog.setCheckBox(torrent_choice)
+        answer = dialog.exec()
         if answer != QMessageBox.Yes:
             return
+        prefer_torrent = bool(torrent_choice and torrent_choice.isChecked())
         self._start_package_task(
             f"Downloading and validating {profile['name']}…",
-            lambda: odrlib_store.download_update(profile, feed),
+            lambda: odrlib_store.download_update(profile, feed, prefer_torrent=prefer_torrent),
             self._odrlib_update_finished,
             "Library update failed",
         )
@@ -3176,6 +3233,9 @@ class MainWindow(QMainWindow):
         self._refresh_downloads_status_button()
         if self.downloads is not None:
             self.downloads.refresh()
+        current_page = self._pages.get(self._current_key)
+        if isinstance(current_page, OdrLibBrowserWidget):
+            current_page.refresh_local_state()
         if self.logs is not None:
             self.logs.poll_new()
         with self._crawl_status_lock:

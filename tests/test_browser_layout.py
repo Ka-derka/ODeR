@@ -10,8 +10,9 @@ try:
     from PySide6.QtCore import QPoint, QRect, Qt
     from PySide6.QtGui import QColor, QImage
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QToolButton
+    from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QToolButton, QTreeWidgetItem
     from gui.browser_widget import BrowserWidget
+    from gui.odrlib_browser import OdrLibBrowserWidget
     from gui.queue_widget import QueueWidget
     from gui.logs_page import LogsPage
     from gui.main_window import ActivityPage, HomePage, LibraryTile, MainWindow, SettingsPage
@@ -200,6 +201,34 @@ class BrowserLayoutTests(unittest.TestCase):
                 widget.tree.topLevelItem(0).text(0), "Season 1/English/episode.mkv"
             )
             widget.close()
+
+    def test_curated_library_opens_existing_file_without_source_chooser(self):
+        widget = OdrLibBrowserWidget()
+        selected = {
+            "item": {"title": "Example", "links": []},
+            "artifact": {
+                "filename": "example.bin", "size": 10,
+                "sources": [
+                    {"type": "https", "url": "https://one.test/example.bin"},
+                    {"type": "torrent", "torrent_id": "t", "file_index": 0},
+                ],
+            },
+            "folder": "Folder",
+        }
+        row = QTreeWidgetItem(["Example"])
+        row.setData(0, Qt.UserRole, selected)
+        widget.tree.addTopLevelItem(row)
+        widget.tree.setCurrentItem(row)
+        widget.set_existing_path_resolver(lambda _request: "C:/Downloads/example.bin")
+        opened = []
+        downloaded = []
+        widget.open_requested.connect(opened.append)
+        widget.download_requested.connect(downloaded.append)
+        self.assertEqual(widget.download_button.text(), "Open")
+        widget.download_button.click()
+        self.assertEqual(opened, ["C:/Downloads/example.bin"])
+        self.assertEqual(downloaded, [])
+        widget.close()
 
     def test_logs_page_exposes_diagnostics_export(self):
         widget = LogsPage()

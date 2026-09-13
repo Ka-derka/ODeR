@@ -68,7 +68,7 @@ class QueueWidget(QWidget):
             ("Pause all", downloader.pause_all),
             ("Resume all", downloader.resume_all),
             ("Retry failed", self._retry_failed),
-            ("Clear completed", self._clear_completed),
+            ("Clear finished", self._clear_completed),
         ):
             button = QPushButton(label)
             button.clicked.connect(callback)
@@ -88,7 +88,7 @@ class QueueWidget(QWidget):
         done = int(item.get("bytes_done") or 0)
         if total:
             return min(100, int(done * 100 / total)), f"{fmt_bytes(done)} / {fmt_bytes(total)}"
-        if item.get("status") == "done":
+        if item.get("status") in downloader.FINISHED_STATUSES:
             return 100, "Complete"
         return 0, item.get("status", "")
 
@@ -161,11 +161,13 @@ class QueueWidget(QWidget):
 
     def _update_summary(self, items):
         active = sum(item.get("status") in ("pending", "downloading", "paused") for item in items)
-        done = sum(item.get("status") == "done" for item in items)
+        done = sum(item.get("status") in downloader.FINISHED_STATUSES for item in items)
+        seeding = sum(item.get("status") == "seeding" for item in items)
         errors = sum(item.get("status") == "error" for item in items)
         speed = sum(float(item.get("speed_bps") or 0) for item in items if item.get("status") == "downloading")
         self.summary_label.setText(
-            f"{active} active · {done} completed · {errors} failed" + (f" · {fmt_bytes(speed)}/s" if speed else "")
+            f"{active} active · {seeding} seeding · {done} finished · {errors} failed"
+            + (f" · {fmt_bytes(speed)}/s" if speed else "")
         )
 
     def _update_group_row(self, row, members):
@@ -270,15 +272,22 @@ class QueueWidget(QWidget):
             if not item:
                 return
             retry = menu.addAction("Retry")
+            retry.setEnabled(item.get("status") == "error")
             pause = menu.addAction("Pause")
+            pause.setEnabled(item.get("status") in {"pending", "downloading", "seeding"})
             resume = menu.addAction("Resume")
+            resume.setEnabled(item.get("status") == "paused")
             open_file = open_folder = None
-            if item.get("status") == "done":
+            if item.get("status") in downloader.FINISHED_STATUSES:
                 menu.addSeparator()
                 open_file = menu.addAction("Open file")
                 open_folder = menu.addAction("Open containing folder")
             menu.addSeparator()
-            remove = menu.addAction("Remove from queue")
+            remove_label = (
+                "Remove from Downloads and stop seeding"
+                if item.get("status") == "seeding" else "Remove from Downloads"
+            )
+            remove = menu.addAction(remove_label)
             chosen = menu.exec(self.tree.viewport().mapToGlobal(position))
             if chosen == retry:
                 downloader.retry_item(item["id"])
@@ -296,5 +305,5 @@ class QueueWidget(QWidget):
 
     def _open_completed(self, row, _column):
         item = self._payload_item(row.data(0, Qt.UserRole))
-        if item and item.get("status") == "done":
+        if item and item.get("status") in downloader.FINISHED_STATUSES:
             self._open_path(downloader.destination_path(item))

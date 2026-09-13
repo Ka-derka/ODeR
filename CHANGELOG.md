@@ -4,8 +4,32 @@ Notable changes to ODeR are recorded here.
 
 ## Unreleased
 
+- Fixed a reproduced Creator hybrid-torrent error 213 involving prefix-overlapping paths such as `Data/`, `Data-2/`, and `Data.txt`. Generated v1 file/padding groups and their complete piece-hash spans are now aligned with v2's component-wise path ordering; existing imported torrents are never rewritten.
+- Shared generated-torrent validation between catalog payloads and T2 package updates, added source-change detection during hashing, and made build errors report the failing stage and libtorrent runtime.
+- Added synthetic prefix/Unicode/empty-file/padding regressions, independent v1/v2 hash checks, legacy file-storage API coverage, and an end-to-end Creator catalog-index regression.
+- Redesigned Creator around a Home screen with folder-based creation, recent projects, and a resumable editing workspace, plus an original high-DPI splash screen.
+- Put name, cover, summary, and description first; folded optional metadata, publishing, and torrent controls into keyboard-accessible sections without changing the project format.
+- Simplified Add File, initialized new files with editable library author/category/license defaults, and added explicit next-revision preparation that preserves library identity.
+- Moved library creation off the UI thread and added a completion screen with output-folder access, testing in ODeR, and copyable sharing/seeding instructions. Progress is indeterminate; safe cancellation is not implemented yet.
+- Kept optional author/category suggestions from interrupting each build, improved unsaved-change tracking, and preserved source references across Save As and file-editor saves.
+- Added the first T2 package-update transport: Creator can build a separate `.odrlib.torrent`, announce its URL/size/hash in the U1 feed, and declare T2 alongside U1.
+- Added opt-in peer delivery in the library update dialog, complete package verification, and HTTPS fallback after an unavailable or stalled torrent transfer.
+- Retained old torrent metadata when replacing a library so existing queued downloads and seeds can still find their original swarm after restart.
+- Added protocol/publishing notes and a prioritized Creator usability review. This is source-stage work; existing release installers have not been rebuilt for T2.
+
+## 1.1.0-beta.1 — 2026-08-25
+
+- Kept completed, verified T1 downloads seeding for as long as their finished entries remain in Downloads, and restored those seeds when ODeR starts again.
+- Reused one torrent session and one handle per embedded torrent across selected files and duplicate library imports, avoiding duplicate-info-hash conflicts and unnecessary networking engines.
+- Preserved the normal downloaded file when a seed is removed; ODeR removes only its private staging link or fallback copy. **Clear finished** follows the same rule and explicitly stops those seeds.
+- Treated seeding jobs as finished downloads throughout progress, grouping, opening, pausing, resuming, clearing, and status summaries while keeping them out of update-install idle checks.
+- Detected existing curated-library downloads by their original HTTPS/T1 source and collision-safe queue destination, then fell back to the normal structured library folder when the Downloads record had already been removed.
+- Changed curated-library actions from **Download** to **Open** whenever that verified-size local destination exists, including double-click and context-menu actions, instead of creating a duplicate job that completes immediately.
 - Fixed macOS release artifacts being built for Apple silicon by the moving `macos-latest` runner; the release workflow now deliberately produces Intel x64 applications for macOS 12 Monterey or newer.
 - Pinned Monterey-compatible Mac Qt and libtorrent wheels and added bundle-wide architecture/deployment-target verification before DMGs can be uploaded.
+- Fixed ODeR Creator producing inconsistent hybrid torrent metadata for larger, multi-folder libraries (`libtorrent:213`) by using libtorrent's canonical file-entry builder.
+- Bound T1 file indices to their canonical torrent paths after libtorrent reorders the file tree, preventing a catalog artifact from ever being paired with another file's index.
+- Pinned the Windows/Linux Qt runtime and hardened Windows packaging against unrelated ICU DLLs on a developer machine's search path, preventing locally built executables from failing at launch.
 
 ## 1.1.0-alpha.3 — 2026-08-25
 

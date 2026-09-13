@@ -19,6 +19,7 @@ from gui.package_dialogs import format_bytes, format_number
 
 class OdrLibBrowserWidget(QWidget):
     download_requested = Signal(object)
+    open_requested = Signal(str)
     information_requested = Signal()
     update_requested = Signal()
 
@@ -27,6 +28,7 @@ class OdrLibBrowserWidget(QWidget):
         self.profile = None
         self.package = None
         self._item_by_id = {}
+        self._existing_path_resolver = None
         self._build_ui()
 
     def _build_ui(self):
@@ -127,6 +129,14 @@ class OdrLibBrowserWidget(QWidget):
             "This package does not contain an update-feed URL. Click for details."
         )
         self._rebuild_tree()
+
+    def set_existing_path_resolver(self, resolver):
+        self._existing_path_resolver = resolver
+        self._selection_changed()
+
+    def refresh_local_state(self):
+        """Refresh the Open/Download action after background jobs finish."""
+        self._selection_changed()
 
     def focus_search(self):
         self.search.setFocus()
@@ -240,13 +250,27 @@ class OdrLibBrowserWidget(QWidget):
         value = current.data(0, Qt.UserRole) if current else None
         return value if isinstance(value, dict) else {}
 
+    def _existing_path(self, selected=None):
+        selected = selected or self._selection()
+        if not selected.get("artifact") or not callable(self._existing_path_resolver):
+            return None
+        try:
+            return self._existing_path_resolver(dict(selected))
+        except (OSError, TypeError, ValueError):
+            return None
+
     def _selection_changed(self, *_args):
         selected = self._selection()
         item = selected.get("item") or {}
         artifact = selected.get("artifact") or {}
         sources = artifact.get("sources") or []
         links = item.get("links") or []
-        self.download_button.setEnabled(bool(sources))
+        existing = self._existing_path(selected)
+        self.download_button.setText("Open" if existing else "Download")
+        self.download_button.setToolTip(
+            "Open the downloaded local file." if existing else "Download this file."
+        )
+        self.download_button.setEnabled(bool(existing or sources))
         self.copy_link_button.setEnabled(any(source.get("type") == "https" for source in sources))
         self.open_page_button.setEnabled(bool(links))
         if not item:
@@ -281,6 +305,10 @@ class OdrLibBrowserWidget(QWidget):
 
     def _download_selected(self):
         selected = self._selection()
+        existing = self._existing_path(selected)
+        if existing:
+            self.open_requested.emit(existing)
+            return
         artifact = selected.get("artifact") or {}
         sources = artifact.get("sources") or []
         if not sources:
@@ -308,8 +336,9 @@ class OdrLibBrowserWidget(QWidget):
         if not selected.get("item"):
             return
         menu = QMenu(self)
-        download = menu.addAction("Download")
-        download.setEnabled(bool((selected.get("artifact") or {}).get("sources")))
+        existing = self._existing_path(selected)
+        download = menu.addAction("Open" if existing else "Download")
+        download.setEnabled(bool(existing or (selected.get("artifact") or {}).get("sources")))
         copy_link = menu.addAction("Copy HTTPS link")
         copy_link.setEnabled(any(
             source.get("type") == "https"

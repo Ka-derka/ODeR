@@ -46,6 +46,17 @@ a = Analysis(
     excludes=[],
     noarchive=False,
 )
+# Qt on supported Windows versions uses the operating system ICU runtime. A
+# developer PATH may also contain an unrelated Poppler ICU build; PyInstaller's
+# dependency scan can otherwise bundle that incompatible DLL and make Qt fail
+# at startup with "The specified procedure could not be found".
+a.binaries = [
+    entry for entry in a.binaries
+    if not (
+        entry[0].lower() in {"icuuc.dll", "icudt78.dll"}
+        and "pyside6" not in str(entry[1]).lower()
+    )
+]
 pyz = PYZ(a.pure)
 
 exe = EXE(

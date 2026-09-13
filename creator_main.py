@@ -11,7 +11,6 @@ from core.paths import DATA_DIR_OVERRIDE_ENV, resource_path
 from core import applog
 from core.version import CREATOR_NAME, CREATOR_VERSION
 from core.torrent_support import runtime_version as torrent_runtime_version
-from gui.creator_window import CreatorWindow
 
 
 def _run(smoke_test=False):
@@ -24,16 +23,32 @@ def _run(smoke_test=False):
     icon_path = resource_path("icon.png")
     if os.path.exists(icon_path):
         app.setWindowIcon(QIcon(icon_path))
-    window = CreatorWindow()
-    if smoke_test:
-        window.dirty = False
-        QTimer.singleShot(250, app.quit)
-    else:
-        window.show()
-    for argument in sys.argv[1:]:
-        if not smoke_test and str(argument).casefold().endswith(".odrproj") and os.path.isfile(argument):
-            window.open_project_path(argument, confirm=False)
-            break
+    splash = None
+    if not smoke_test:
+        from gui.creator_splash import CreatorSplashScreen
+        splash = CreatorSplashScreen()
+        splash.show()
+        splash.set_status("Loading your workspace…")
+    try:
+        # Load the authoring interface only after the startup card can paint.
+        from gui.creator_window import CreatorWindow
+        if splash:
+            splash.set_status("Preparing library tools…")
+        window = CreatorWindow()
+        if smoke_test:
+            window.dirty = False
+            QTimer.singleShot(250, app.quit)
+        else:
+            for argument in sys.argv[1:]:
+                if str(argument).casefold().endswith(".odrproj") and os.path.isfile(argument):
+                    splash.set_status("Opening your project…")
+                    window.open_project_path(argument, confirm=False)
+                    break
+            window.show()
+            splash.finish(window)
+    finally:
+        if splash:
+            splash.close()
     return app.exec()
 
 
