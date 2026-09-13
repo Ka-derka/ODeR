@@ -2,7 +2,7 @@
 # deployment tags still support macOS 12 Monterey. Keep this separate from the
 # current Windows/Linux runtime so a newer dependency cannot silently raise the
 # minimum macOS version of a published DMG.
-PySide6==6.9.3
+PySide6==6.11.2
 requests>=2.31,<3
 # 49+ removed Intel macOS wheels. This pin retains the universal2 wheel.
 cryptography==48.0.1
