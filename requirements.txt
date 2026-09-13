@@ -1,5 +1,5 @@
 PySide6==6.11.2; sys_platform != "darwin"
-PySide6==6.9.3; sys_platform == "darwin"
+PySide6==6.11.2; sys_platform == "darwin"
 requests>=2.31
 cryptography==50.0.1; sys_platform != "darwin" or platform_machine != "x86_64"
 cryptography==48.0.1; sys_platform == "darwin" and platform_machine == "x86_64"
