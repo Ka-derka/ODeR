@@ -7,5 +7,5 @@ requests>=2.31,<3
 # 49+ removed Intel macOS wheels. This pin retains the universal2 wheel.
 cryptography==48.0.1
 libtorrent==2.0.9
-pyinstaller==6.16.0
+pyinstaller==6.22.2
 pillow>=10,<13
