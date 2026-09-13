@@ -8,4 +8,4 @@ requests>=2.31,<3
 cryptography==48.0.1
 libtorrent==2.0.9
 pyinstaller==6.16.0
-pillow>=10,<13
+pillow>=12.3.0,<13
