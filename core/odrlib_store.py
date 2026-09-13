@@ -25,6 +25,7 @@ from core.profiles import (
 )
 from core.updater import UpdateError, is_newer_version
 from core.version import APP_NAME, APP_VERSION
+from core.update_security import get_response, strict_json, trusted_state, pin_key, record_verified_feed
 
 
 PACKAGE_FILENAME = "library.odrlib"
@@ -110,6 +111,9 @@ def _profile_document(info, profile_id, package_path, artwork_path=""):
             "created_at": info.created_at,
             "updated_at": updated_at,
             "update_feed_url": info.update_feed_url or "",
+            "update_protocol": (info.library.get("update") or {}).get("protocol", "U1"),
+            "update_key": (info.library.get("update") or {}).get("signing_key"),
+            "update_channel": (info.library.get("update") or {}).get("channel", "stable"),
             "extensions": [extension.badge for extension in info.extensions],
             "counts": counts,
         },
@@ -182,9 +186,26 @@ def _extract_artwork(info, profile_id):
     return destination
 
 
-def import_library(path, *, conflict_policy="error", replace_profile_id=None):
+def import_library(path, *, conflict_policy="error", replace_profile_id=None, authorized_feed=None):
     """Validate and install a package, or atomically replace the same library."""
     info = inspect_library(path, verify_hashes=True)
+    state = trusted_state(info.library_id)
+    if state:
+        update = info.library.get("update") or {}
+        if update.get("protocol") != "U1.1" or update.get("signing_key") != state["key"]:
+            raise OdrLibError("This package changes or removes a trusted publisher key.")
+        if info.revision < state["revision"]:
+            raise OdrLibError("This package is older than a previously seen signed revision.")
+        if authorized_feed is not None:
+            verified = inspect_update_feed(authorized_feed.signed_envelope, trusted_key=state["key"])
+            record_verified_feed(verified)
+            if verified.library_id != info.library_id or verified.revision != info.revision:
+                raise OdrLibError("The package does not match its signed update authorization.")
+            expected_sha = verified.sha256
+        else:
+            expected_sha = state.get("package_sha256") if info.revision == state["revision"] else None
+        if not expected_sha or _sha256_file(path) != expected_sha:
+            raise OdrLibError("Use the signed update feed to authorize a changed package for this trusted library.")
     conflicts = find_conflicts(info)
     target = get_profile(replace_profile_id) if replace_profile_id else None
     replacing = conflict_policy == "replace"
@@ -362,16 +383,51 @@ def torrent_metainfo(profile, source):
     return {"data": data, "source": selected, "package": info}
 
 
+def trust_library_publisher(profile, fingerprint):
+    """Called only after an explicit local user trust decision; never by import."""
+    info = load_profile_package(profile)
+    update = info.library.get("update") or {}
+    if update.get("protocol") != "U1.1":
+        raise OdrLibError("This library does not declare signed updates.")
+    return pin_key(info.library_id, update.get("signing_key"), fingerprint, info.revision,
+                   package_sha256=_sha256_file(info.path))
+
+
+def _update_trust(stored):
+    state = trusted_state(stored.get("library_id"))
+    signed = stored.get("update_protocol", "U1") == "U1.1"
+    if signed and not state:
+        raise OdrLibError("Trust this library's publisher key before checking updates.")
+    if state and (not signed or stored.get("update_key") != state["key"]):
+        raise OdrLibError("The library's update protocol or publisher differs from its trusted identity.")
+    return state
+
+
+def _authenticate_feed(stored, value):
+    state = _update_trust(stored)
+    feed = inspect_update_feed(value, trusted_key=state["key"] if state else None)
+    if bool(feed.signed_envelope) != bool(state):
+        raise OdrLibError("Import a U1.1 library and explicitly trust its publisher to enable signed updates.")
+    if feed.library_id != stored.get("library_id"):
+        raise OdrLibError("The update feed belongs to a different library.")
+    if state:
+        if feed.channel != stored.get("update_channel", "stable"):
+            raise OdrLibError("The signed update feed belongs to a different channel.")
+        record_verified_feed(feed)
+    return feed
+
+
 def check_for_update(profile, session=None):
     stored = (profile or {}).get("odrlib") or {}
     feed_url = stored.get("update_feed_url")
     if not feed_url:
         raise OdrLibError("This library does not publish an update feed.")
+    state = _update_trust(stored)
     session = session or requests
     response = None
     try:
-        response = session.get(
-            feed_url,
+        response = get_response(
+            session, feed_url, allow_http=bool(state),
             headers={"Accept": "application/json", "User-Agent": f"{APP_NAME}/{APP_VERSION}"},
             timeout=20,
             stream=True,
@@ -386,7 +442,7 @@ def check_for_update(profile, session=None):
             if size > MAX_MANIFEST_BYTES:
                 raise OdrLibError("The library update feed is too large.")
             chunks.append(chunk)
-        value = json.loads(b"".join(chunks).decode("utf-8"))
+        value = strict_json(b"".join(chunks))
     except OdrLibError:
         raise
     except Exception as exc:
@@ -395,7 +451,7 @@ def check_for_update(profile, session=None):
         close = getattr(response, "close", None)
         if callable(close):
             close()
-    feed = inspect_update_feed(value)
+    feed = _authenticate_feed(stored, value)
     if feed.library_id != stored.get("library_id"):
         raise OdrLibError("The update feed belongs to a different library.")
     minimum = feed.minimum_reader
@@ -412,6 +468,10 @@ def download_update(profile, feed: UpdateFeedInfo, session=None, *, prefer_torre
     if not isinstance(feed, UpdateFeedInfo):
         raise OdrLibError("The library update information is invalid.")
     stored = (profile or {}).get("odrlib") or {}
+    state = _update_trust(stored)
+    if state or feed.signed_envelope:
+        # Reverify the signed bytes, not mutable fields from a previous dialog.
+        feed = _authenticate_feed(stored, feed.signed_envelope)
     if feed.library_id != stored.get("library_id"):
         raise OdrLibError("The update belongs to a different library.")
     if feed.revision <= int(stored.get("revision") or 0):
@@ -434,16 +494,16 @@ def download_update(profile, feed: UpdateFeedInfo, session=None, *, prefer_torre
                     raise OdrLibError("The torrent package failed its size or SHA-256 check.")
             except Exception as exc:
                 from core import applog
-                applog.log(f"Torrent library update unavailable; using HTTPS: {exc}")
+                applog.log(f"Torrent library update unavailable; using server download: {exc}")
             else:
                 package = inspect_library(temporary, verify_hashes=True)
                 if package.library_id != feed.library_id or package.revision != feed.revision:
                     raise OdrLibError("The downloaded package does not match its update feed.")
-                return import_library(temporary, conflict_policy="replace", replace_profile_id=profile["id"])
+                return import_library(temporary, conflict_policy="replace", replace_profile_id=profile["id"], authorized_feed=feed if state else None)
         response = None
         try:
-            response = session.get(
-                feed.url,
+            response = get_response(
+                session, feed.url, allow_http=bool(state),
                 headers={"Accept": "application/vnd.oder.library+zip", "User-Agent": f"{APP_NAME}/{APP_VERSION}"},
                 timeout=30,
                 stream=True,
@@ -473,7 +533,7 @@ def download_update(profile, feed: UpdateFeedInfo, session=None, *, prefer_torre
         package = inspect_library(temporary, verify_hashes=True)
         if package.library_id != feed.library_id or package.revision != feed.revision:
             raise OdrLibError("The downloaded package does not match its update feed.")
-        return import_library(temporary, conflict_policy="replace", replace_profile_id=profile["id"])
+        return import_library(temporary, conflict_policy="replace", replace_profile_id=profile["id"], authorized_feed=feed if state else None)
     finally:
         try:
             os.remove(temporary)

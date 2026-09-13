@@ -11,6 +11,10 @@ The versions actually installed or bundled may vary because the main and platfor
 | PySide6, PySide6 Essentials, PySide6 Addons and Shiboken6 | Python bindings and support libraries for Qt | LGPL-3.0/GPL-3.0 or a Qt commercial license, depending on the distribution and use | [Qt for Python](https://doc.qt.io/qtforpython-6/) and [license details](https://doc.qt.io/qtforpython-6/licenses.html) |
 | Qt 6 libraries used by PySide6 | Desktop interface framework | LGPL-3.0/GPL-3.0 or a Qt commercial license; individual Qt modules may have additional terms | [Qt licensing](https://doc.qt.io/qt-6/licensing.html) |
 | Requests | HTTP client | Apache-2.0 | [Requests LICENSE](https://github.com/psf/requests/blob/main/LICENSE) |
+| cryptography 50.0.1 (48.0.1 for Intel macOS) | Ed25519 publisher signatures for U1.1 | Apache-2.0 OR BSD-3-Clause | [cryptography licenses](https://github.com/pyca/cryptography/blob/main/LICENSE) |
+| CFFI | Native bindings used by cryptography | Distribution-specific; the tested 2.1.1 wheel uses MIT-0 | Complete license is retained in bundled distribution metadata |
+| pycparser | C parser dependency of CFFI | BSD-3-Clause | [pycparser license](https://github.com/eliben/pycparser/blob/main/LICENSE) |
+| OpenSSL included in cryptography wheels | Cryptographic implementation | Apache-2.0 for OpenSSL 3/4 | [OpenSSL license](https://github.com/openssl/openssl/blob/master/LICENSE.txt) |
 | libtorrent 2.1.1 (Windows/Linux) and 2.0.9 (Intel macOS compatibility build) | BitTorrent metainfo creation and T1 downloads | BSD-3-Clause | [2.1 COPYING](https://github.com/arvidn/libtorrent/blob/RC_2_1/COPYING) and [2.0 COPYING](https://github.com/arvidn/libtorrent/blob/RC_2_0/COPYING) |
 | Charset Normalizer | Response character-set detection used by Requests | MIT | [Charset Normalizer LICENSE](https://github.com/jawah/charset_normalizer/blob/master/LICENSE) |
 | idna | Internationalized domain-name handling used by Requests | BSD-3-Clause | [idna LICENSE](https://github.com/kjd/idna/blob/master/LICENSE.md) |

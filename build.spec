@@ -4,6 +4,7 @@
 block_cipher = None
 
 from core.version import APP_VERSION, windows_version_tuple
+from PyInstaller.utils.hooks import copy_metadata
 from PyInstaller.utils.win32.versioninfo import (
     FixedFileInfo,
     StringFileInfo,
@@ -38,7 +39,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('icon.png', '.')],
+    datas=[('icon.png', '.')] + copy_metadata('cryptography', recursive=True),
     hiddenimports=['libtorrent'],
     hookspath=[],
     hooksconfig={},

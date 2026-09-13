@@ -22,6 +22,8 @@ def _run(smoke_test=False, smoke_scope=None):
     app = QApplication(sys.argv)
     if smoke_test:
         torrent_runtime_version()
+        from core.update_security import runtime_self_test
+        runtime_self_test()
     app.setQuitOnLastWindowClosed(smoke_test is True)
     app.setApplicationName("ODeR")
     app.setApplicationVersion(APP_VERSION)

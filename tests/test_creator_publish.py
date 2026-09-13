@@ -16,6 +16,7 @@ def build_result(**changes):
         size=2048,
         sha256="a" * 64,
         package=SimpleNamespace(
+            library={},
             name="My Library", item_count=12, collection_count=3,
             update_feed_url="https://example.org/library-feed.json",
         ),

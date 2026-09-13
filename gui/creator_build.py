@@ -6,20 +6,24 @@ from copy import deepcopy
 from PySide6.QtCore import QThread, QTimer, Qt, Slot
 from PySide6.QtWidgets import QDialog, QLabel, QProgressBar, QVBoxLayout
 
-from core.odrlib import build_library
+from core.odrlib import build_library, refresh_update_feed
 
 
 class _BuildWorker(QThread):
-    def __init__(self, project, destination, project_path, parent):
+    def __init__(self, project, destination, project_path, parent, refresh=False):
         super().__init__(parent)
         self.project = project
         self.destination = destination
         self.project_path = project_path
         self.build_result = None
         self.error = None
+        self.refresh = refresh
 
     def run(self):
         try:
+            if self.refresh:
+                self.build_result = refresh_update_feed(self.project, self.destination)
+                return
             self.build_result = build_library(
                 self.project, self.destination, project_path=self.project_path,
             )
@@ -36,7 +40,7 @@ class BuildProgressDialog(QDialog):
     during work; the worker is never terminated while writing a package.
     """
 
-    def __init__(self, project, destination, project_path=None, parent=None):
+    def __init__(self, project, destination, project_path=None, parent=None, *, refresh=False):
         super().__init__(parent)
         self.setWindowTitle("Create shareable library")
         self.setWindowModality(Qt.WindowModality.WindowModal)
@@ -47,16 +51,16 @@ class BuildProgressDialog(QDialog):
         self.error = None
         self._started = False
         self._complete = False
-        self._worker = _BuildWorker(deepcopy(project), destination, project_path, self)
+        self._worker = _BuildWorker(deepcopy(project), destination, project_path, self, refresh=refresh)
         self._worker.finished.connect(self._build_finished, Qt.ConnectionType.QueuedConnection)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 22, 24, 22)
         layout.setSpacing(16)
-        title = QLabel("Creating your library")
+        title = QLabel("Refreshing signed feed" if refresh else "Creating your library")
         title.setObjectName("pageTitle")
         layout.addWidget(title)
-        status = QLabel("Preparing files and creating your library…")
+        status = QLabel("Checking the existing package and signing a fresh feed…" if refresh else "Preparing files and creating your library…")
         status.setWordWrap(True)
         layout.addWidget(status)
         self.progress = QProgressBar()

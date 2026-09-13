@@ -420,6 +420,7 @@ class CreatorWindow(QMainWindow):
         self.validate_action = QAction("Check library", self, shortcut="F6", triggered=self.validate_current_project)
         self.build_action = QAction("Create shareable library…", self, shortcut="Ctrl+B", triggered=self.build_package)
         self.next_revision_action = QAction("Prepare next revision", self, triggered=self.prepare_next_revision)
+        self.refresh_feed_action = QAction("Refresh signed feed…", self, triggered=self.refresh_signed_feed)
         self.exit_action = QAction("Exit", self, triggered=self.close)
         self.add_file_action = QAction("Add file…", self, shortcut="Ctrl+I", triggered=self.add_file)
         self.add_folder_action = QAction("Add folder", self, triggered=self.add_folder)
@@ -437,6 +438,7 @@ class CreatorWindow(QMainWindow):
         catalog_menu.addActions((self.add_file_action, self.add_folder_action, self.delete_action))
         catalog_menu.addSeparator()
         catalog_menu.addAction(self.next_revision_action)
+        catalog_menu.addAction(self.refresh_feed_action)
 
     def _build_ui(self):
         shell = QWidget()
@@ -585,7 +587,7 @@ class CreatorWindow(QMainWindow):
     def _set_workspace_actions(self, enabled):
         for action in (self.save_action, self.save_as_action, self.validate_action,
                        self.build_action, self.add_file_action, self.add_folder_action,
-                       self.delete_action, self.next_revision_action):
+                       self.delete_action, self.next_revision_action, self.refresh_feed_action):
             action.setEnabled(enabled)
 
     def _connect_edit_tracking(self):
@@ -686,13 +688,37 @@ class CreatorWindow(QMainWindow):
         rights.addRow("License URL", self.library_license_url)
 
         publishing = self._card_form(layout, "Online updates · optional", collapsed=True, key="publishing")
+        self.update_protocol = QComboBox()
+        self.update_protocol.addItem("U1 · HTTPS updates", "U1")
+        self.update_protocol.addItem("U1.1 · Signed HTTP / HTTPS updates", "U1.1")
+        self.library_signing_key = None
+        self.signing_fingerprint = QLabel("No signing identity yet")
+        self.signing_fingerprint.setTextFormat(Qt.PlainText)
+        self.signing_fingerprint.setWordWrap(True)
+        self.signing_fingerprint.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.create_signing_identity = QPushButton("Create signing identity")
+        self.create_signing_identity.clicked.connect(self._create_signing_identity)
+        self.feed_validity_days = QSpinBox()
+        self.feed_validity_days.setRange(1, 365)
+        self.feed_validity_days.setValue(30)
+        self.feed_validity_days.setSuffix(" days")
+        publishing.addRow("Update security", self.update_protocol)
+        publishing.addRow("Publisher fingerprint", self.signing_fingerprint)
+        publishing.addRow("", self.create_signing_identity)
+        publishing.addRow("Signed feed validity", self.feed_validity_days)
+        key_hint = QLabel("U1.1 needs a signing identity. Its private key stays on this computer, outside "
+                          "your project and library. Back it up privately; losing it prevents future signed updates. "
+                          "HTTP is not encrypted. Recipients must trust your fingerprint before updating.")
+        key_hint.setWordWrap(True)
+        key_hint.setObjectName("mutedLabel")
+        publishing.addRow(key_hint)
         self.feed_url = QLineEdit()
         self.feed_url.setPlaceholderText("https://example.org/library.odrlib-feed.json")
         self.update_channel = QComboBox()
         self.update_channel.setEditable(True)
         self.update_channel.addItems(("stable", "preview", "archive"))
         self.package_url = QLineEdit()
-        self.package_url.setPlaceholderText("Public HTTPS URL of the exported .odrlib")
+        self.package_url.setPlaceholderText("Package HTTPS URL (HTTP allowed with U1.1)")
         self.release_notes = QPlainTextEdit()
         self.release_notes.setPlaceholderText("Shown when this revision is offered as an update")
         self.release_notes.setFixedHeight(90)
@@ -746,6 +772,39 @@ class CreatorWindow(QMainWindow):
         torrent.addRow("Comment", self.torrent_comment)
         layout.addStretch(1)
         return page
+
+    def refresh_signed_feed(self):
+        self._commit_editor()
+        if self.project["library"]["update"].get("protocol") != "U1.1":
+            QMessageBox.information(self, "Signed updates required", "Select U1.1 in Online updates to use signed feeds.")
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "Select the already published package (it will not be changed)",
+                                             os.path.dirname(self.project_path or ""), "ODeR Libraries (*.odrlib)")
+        if not path:
+            return
+        work = BuildProgressDialog(self.project, path, self.project_path, self, refresh=True)
+        if work.exec() != QDialog.Accepted:
+            QMessageBox.warning(self, "Feed refresh failed", str(work.error))
+            return
+        PublishResultDialog(work.build_result, self).exec()
+
+    def _create_signing_identity(self):
+        if self.library_signing_key:
+            return
+        from core.update_security import create_signing_key, signing_key_directory
+        try:
+            self.library_signing_key = create_signing_key()
+        except Exception as exc:
+            QMessageBox.warning(self, "Signing identity unavailable", str(exc))
+            return
+        self.signing_fingerprint.setText(self.library_signing_key["key_id"])
+        self.create_signing_identity.setEnabled(False)
+        self.update_protocol.setCurrentIndex(self.update_protocol.findData("U1.1"))
+        self._commit_editor()
+        self._set_dirty(True)
+        QMessageBox.information(self, "Signing identity created",
+                                "Back up the private key folder securely. It contains unencrypted private keys; "
+                                "never upload it with your library.\n\n" + signing_key_directory())
 
     def _choose_torrent_root(self):
         folder = QFileDialog.getExistingDirectory(
@@ -958,6 +1017,11 @@ class CreatorWindow(QMainWindow):
             self.library_license_name.setText(library["license"]["name"])
             self.library_license_url.setText(library["license"]["url"])
             self.feed_url.setText(library["update"]["feed_url"])
+            self.library_signing_key = deepcopy(library["update"].get("signing_key"))
+            self.update_protocol.setCurrentIndex(max(0, self.update_protocol.findData(library["update"].get("protocol", "U1"))))
+            self.signing_fingerprint.setText((self.library_signing_key or {}).get("key_id", "No signing identity yet"))
+            self.create_signing_identity.setEnabled(not bool(self.library_signing_key))
+            self.feed_validity_days.setValue(self.project["publishing"].get("feed_validity_days", 30))
             _set_combo(self.update_channel, library["update"]["channel"])
             self.package_url.setText(self.project["publishing"]["package_url"])
             self.release_notes.setPlainText(self.project["publishing"]["release_notes"])
@@ -1041,10 +1105,12 @@ class CreatorWindow(QMainWindow):
                 "links": _line_values(self.library_links.toPlainText()),
                 "artwork_path": self.library_artwork.text(),
                 "license": {"name": self.library_license_name.text().strip(), "url": self.library_license_url.text().strip()},
-                "update": {"feed_url": self.feed_url.text().strip(), "channel": self.update_channel.currentText().strip() or "stable"},
+                "update": {"feed_url": self.feed_url.text().strip(), "channel": self.update_channel.currentText().strip() or "stable",
+                           "protocol": self.update_protocol.currentData(), "signing_key": deepcopy(self.library_signing_key)},
             })
             self.project["publishing"] = {
                 "package_url": self.package_url.text().strip(),
+                "feed_validity_days": self.feed_validity_days.value(),
                 "release_notes": self.release_notes.toPlainText().strip(),
                 "torrent_updates": self.torrent_updates.isChecked(),
                 "update_torrent_url": self.update_torrent_url.text().strip(),
@@ -1313,7 +1379,7 @@ class CreatorWindow(QMainWindow):
         )
         extension_badges = []
         if (library.get("update") or {}).get("feed_url"):
-            extension_badges.append("U1")
+            extension_badges.append(self.update_protocol.currentData() if editing_library else library["update"].get("protocol", "U1"))
         torrent_count = sum(
             1 for item in self.project["items"] for artifact in item["artifacts"]
             if any(source["type"] == "torrent" for source in artifact["sources"])

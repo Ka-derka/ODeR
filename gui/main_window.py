@@ -2893,6 +2893,19 @@ class MainWindow(QMainWindow):
                 "new .odrlib package at their configured HTTPS addresses.",
             )
             return
+        try:
+            from core.update_security import trusted_state
+            stored = profile.get("odrlib") or {}
+            if stored.get("update_protocol") == "U1.1" and not trusted_state(stored["library_id"]):
+                from gui.update_trust import PublisherTrustDialog
+                info = odrlib_store.load_profile_package(profile)
+                key = info.library["update"]["signing_key"]
+                if not PublisherTrustDialog(key["key_id"], self).exec():
+                    return
+                odrlib_store.trust_library_publisher(profile, key["key_id"])
+        except Exception as exc:
+            QMessageBox.warning(self, "Publisher trust unavailable", str(exc))
+            return
         self._start_package_task(
             f"Checking {profile['name']} for updates…",
             lambda: odrlib_store.check_for_update(profile),
@@ -2908,6 +2921,10 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Library is current", "The installed library is already up to date.")
             return
         notes = f"\n\n{feed.release_notes}" if feed.release_notes else ""
+        if feed.signing_key:
+            notes = "\nPublisher signature verified against your trusted key." + notes
+            if feed.url.startswith("http:"):
+                notes += "\nHTTP transport is not encrypted."
         dialog = QMessageBox(self)
         dialog.setWindowTitle("Curated library update available")
         dialog.setTextFormat(Qt.PlainText)
@@ -2917,8 +2934,8 @@ class MainWindow(QMainWindow):
         dialog.setDefaultButton(QMessageBox.No)
         torrent_choice = None
         if feed.torrent and load_settings().get("torrent_enabled", True):
-            torrent_choice = QCheckBox("Get the update from peers (HTTPS fallback)", dialog)
-            torrent_choice.setToolTip("Peers can see your IP address. If the transfer stalls, ODeR uses HTTPS.")
+            torrent_choice = QCheckBox("Get the update from peers (server fallback)", dialog)
+            torrent_choice.setToolTip("Peers can see your IP address. If the transfer stalls, ODeR uses the configured package URL.")
             dialog.setCheckBox(torrent_choice)
         answer = dialog.exec()
         if answer != QMessageBox.Yes:

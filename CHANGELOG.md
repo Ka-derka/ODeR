@@ -4,6 +4,9 @@ Notable changes to ODeR are recorded here.
 
 ## Unreleased
 
+- Added U1.1 publisher-signed library feeds with explicit key trust, HTTP/HTTPS update delivery, expiry, persistent replay/rollback protection, and fail-closed handling of key changes or unsigned downgrades. Legacy U1 HTTPS feeds remain supported.
+- Added Creator signing-identity controls, configurable feed validity, fingerprint sharing, and background refresh of signed feeds without rebuilding package bytes. Private keys stay outside projects and packages.
+- Bound T2 package-torrent metadata into signed feeds and checked every update redirect before following it. Added a localhost HTTP integration test and signed-update/UI regressions. See `U11_SIGNED_UPDATES.md` for setup and testing.
 - Fixed a reproduced Creator hybrid-torrent error 213 involving prefix-overlapping paths such as `Data/`, `Data-2/`, and `Data.txt`. Generated v1 file/padding groups and their complete piece-hash spans are now aligned with v2's component-wise path ordering; existing imported torrents are never rewritten.
 - Shared generated-torrent validation between catalog payloads and T2 package updates, added source-change detection during hashing, and made build errors report the failing stage and libtorrent runtime.
 - Added synthetic prefix/Unicode/empty-file/padding regressions, independent v1/v2 hash checks, legacy file-storage API coverage, and an end-to-end Creator catalog-index regression.

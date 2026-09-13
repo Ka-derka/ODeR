@@ -152,6 +152,10 @@ def library_detail_rows(profile, *, cached, index_source, last_updated, made_wit
     ]
     if extensions:
         rows.append(("Extensions", " · ".join(extensions)))
+    update_key = ((profile or {}).get("odrlib") or {}).get("update_key")
+    if update_key and ((profile or {}).get("odrlib") or {}).get("update_protocol") == "U1.1":
+        rows.append(("Publisher fingerprint", str(update_key.get("key_id", "Unknown"))))
+        rows.append(("Update security", "U1.1 · Explicit publisher trust required before online updates"))
     rows.extend((
         ("Cached", cached),
         ("Index Source", index_source),

@@ -1,6 +1,7 @@
 # Build on macOS with: pyinstaller --noconfirm build_macos.spec
 
 from core.version import APP_VERSION, windows_version_tuple
+from PyInstaller.utils.hooks import copy_metadata
 
 
 numeric_version = ".".join(str(part) for part in windows_version_tuple()[:3])
@@ -9,7 +10,7 @@ a = Analysis(
     ["main.py"],
     pathex=[],
     binaries=[],
-    datas=[("icon.png", ".")],
+    datas=[("icon.png", ".")] + copy_metadata("cryptography", recursive=True),
     hiddenimports=['libtorrent'],
     hookspath=[],
     hooksconfig={},

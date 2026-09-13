@@ -17,13 +17,14 @@ from urllib.parse import urlsplit
 from core.odrlib import MAX_TORRENT_BYTES, OdrLibError
 
 
-def validate_descriptor(value):
+def validate_descriptor(value, *, allow_http=False):
     if not isinstance(value, dict) or value.get("extension") != "T2":
         raise OdrLibError("The update torrent must declare extension T2.")
     url = str(value.get("url") or "")
     try:
         parsed = urlsplit(url)
-        valid_url = parsed.scheme == "https" and parsed.hostname and not parsed.username and not parsed.password
+        from core.update_security import update_url
+        valid_url = update_url(url, allow_http=allow_http)
         parsed.port
     except ValueError:
         valid_url = False
@@ -42,7 +43,7 @@ def validate_descriptor(value):
     return {"extension": "T2", "url": url, "size": size, "sha256": digest, "path": path}
 
 
-def build_update_torrent(package_path, url, options):
+def build_update_torrent(package_path, url, options, *, allow_http=False):
     from core.torrent_support import create_package_metainfo
     from core.version import CREATOR_NAME, CREATOR_VERSION
     package_path = os.path.abspath(package_path)
@@ -56,7 +57,7 @@ def build_update_torrent(package_path, url, options):
     descriptor = validate_descriptor({
         "extension": "T2", "url": url, "size": len(data),
         "sha256": hashlib.sha256(data).hexdigest(), "path": name,
-    })
+    }, allow_http=allow_http)
     destination = package_path + ".torrent"
     fd, temporary = tempfile.mkstemp(dir=os.path.dirname(package_path), prefix=".update-torrent-")
     try:
@@ -71,13 +72,14 @@ def build_update_torrent(package_path, url, options):
     return destination, descriptor
 
 
-def fetch_metainfo(descriptor, session):
-    descriptor = validate_descriptor(descriptor)
-    response = session.get(descriptor["url"], stream=True, timeout=20)
+def fetch_metainfo(descriptor, session, *, allow_http=False):
+    from core.update_security import get_response
+    descriptor = validate_descriptor(descriptor, allow_http=allow_http)
+    response = get_response(session, descriptor["url"], allow_http=allow_http, stream=True, timeout=20)
     try:
         response.raise_for_status()
         # requests follows redirects; bootstrap metadata must stay on HTTPS.
-        if getattr(response, "url", descriptor["url"]) and urlsplit(
+        if not allow_http and getattr(response, "url", descriptor["url"]) and urlsplit(
                 getattr(response, "url", descriptor["url"])).scheme != "https":
             raise OdrLibError("The update torrent redirected away from HTTPS.")
         result = bytearray()
@@ -93,9 +95,9 @@ def fetch_metainfo(descriptor, session):
         response.close()
 
 
-def validate_metainfo(data, descriptor, package_size):
+def validate_metainfo(data, descriptor, package_size, *, allow_http=False):
     from core.torrent_support import inspect_metainfo, torrent_info
-    descriptor = validate_descriptor(descriptor)
+    descriptor = validate_descriptor(descriptor, allow_http=allow_http)
     metadata = inspect_metainfo(data)
     files = metadata["files"]
     info = torrent_info(data)
@@ -116,9 +118,10 @@ def receive_package(feed, destination, http_session, *, stall_timeout=20, total_
     settings = load_settings()
     if not settings.get("torrent_enabled", True):
         raise OdrLibError("Torrent downloads are disabled in Settings.")
-    descriptor = validate_descriptor(feed.torrent)
-    data = fetch_metainfo(descriptor, http_session)
-    info = validate_metainfo(data, descriptor, feed.size)
+    allow_http = bool(feed.signed_envelope)
+    descriptor = validate_descriptor(feed.torrent, allow_http=allow_http)
+    data = fetch_metainfo(descriptor, http_session, allow_http=allow_http)
+    info = validate_metainfo(data, descriptor, feed.size, allow_http=allow_http)
     lt = binding()
     with tempfile.TemporaryDirectory(prefix=".t2-transfer-", dir=os.path.dirname(destination)) as staging:
         session = lt.session(downloader._torrent_session_settings(lt, settings))

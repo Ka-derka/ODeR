@@ -40,7 +40,7 @@ TORRENT_EXTENSION_ID = "T"
 TORRENT_EXTENSION_VERSION = 1
 TORRENT_UPDATE_VERSION = 2
 SUPPORTED_EXTENSIONS = {
-    UPDATE_EXTENSION_ID: {UPDATE_EXTENSION_VERSION},
+    UPDATE_EXTENSION_ID: {UPDATE_EXTENSION_VERSION, "1.1"},
     TORRENT_EXTENSION_ID: {TORRENT_EXTENSION_VERSION, TORRENT_UPDATE_VERSION},
 }
 
@@ -84,7 +84,7 @@ class ValidationIssue:
 @dataclass(frozen=True)
 class ExtensionInfo:
     id: str
-    version: int
+    version: int | str
     required: bool
 
     @property
@@ -146,6 +146,8 @@ class UpdateFeedInfo:
     minimum_reader: str
     release_notes: str
     torrent: dict | None = None
+    signing_key: dict | None = None
+    signed_envelope: dict | None = None
 
 
 def _now_iso():
@@ -201,6 +203,11 @@ def _https_url(value):
     text = _clean_text(value, 4096)
     parts = urlsplit(text)
     return text if parts.scheme.lower() == "https" and parts.netloc else None
+
+
+def _update_url(value, signed=False):
+    from core.update_security import update_url
+    return update_url(value, allow_http=signed)
 
 
 def _portable_url(value):
@@ -264,9 +271,8 @@ def _inspect_extensions(value):
                 raise OdrLibError("A package extension declaration is malformed.")
             extension_id = str(record.get("id") or "")
             version = record.get("version")
-            if (not _EXTENSION_ID_RE.fullmatch(extension_id)
-                    or isinstance(version, bool) or not isinstance(version, int)
-                    or version < 1 or version > 65535):
+            valid_version = (type(version) is int and 1 <= version <= 65535) or (extension_id == "U" and version == "1.1")
+            if not _EXTENSION_ID_RE.fullmatch(extension_id) or not valid_version:
                 raise OdrLibError("A package extension ID or version is invalid.")
             if extension_id in seen:
                 raise OdrLibError(f"Extension {extension_id} is declared more than once.")
@@ -397,12 +403,12 @@ def new_project():
             "revision": 1,
             "artwork_path": "",
             "created_at": now,
-            "update": {"feed_url": "", "channel": "stable"},
+            "update": {"feed_url": "", "channel": "stable", "protocol": "U1", "signing_key": None},
         },
         "items": [],
         "collections": [],
         "publishing": {"package_url": "", "release_notes": "", "torrent_updates": False,
-                       "update_torrent_url": ""},
+                       "update_torrent_url": "", "feed_validity_days": 30},
         "torrent": {
             "root_path": "", "trackers": [], "web_seeds": [],
             "private": False, "comment": "", "piece_size": 0,
@@ -516,6 +522,8 @@ def normalize_project(value):
             "update": {
                 "feed_url": _portable_url(update_value.get("feed_url")),
                 "channel": _clean_text(update_value.get("channel"), 50) or "stable",
+                "protocol": _clean_text(update_value.get("protocol"), 20) or "U1",
+                "signing_key": deepcopy(update_value.get("signing_key")),
             },
         },
         "items": [
@@ -529,6 +537,7 @@ def normalize_project(value):
             "release_notes": _clean_text(publishing.get("release_notes"), 20_000),
             "torrent_updates": bool(publishing.get("torrent_updates", False)),
             "update_torrent_url": _portable_url(publishing.get("update_torrent_url")),
+            "feed_validity_days": publishing.get("feed_validity_days", 30),
         },
         "torrent": {
             "root_path": _clean_text(torrent.get("root_path"), 32768),
@@ -636,7 +645,24 @@ def validate_project(project, project_path=None):
         issues.append(ValidationIssue("warning", "Library", "Creator or curator is not set."))
     if not library["category"].strip():
         issues.append(ValidationIssue("warning", "Library", "Category is not set."))
-    for label, url in (("license URL", library["license"].get("url")), ("update feed", library["update"].get("feed_url"))):
+    signed_updates = library["update"].get("protocol") == "U1.1"
+    if library["update"].get("protocol") not in {"U1", "U1.1"}:
+        issues.append(ValidationIssue("error", "Publishing", "Unsupported update protocol."))
+    if signed_updates:
+        from core.update_security import load_signing_key
+        try:
+            load_signing_key(library["update"].get("signing_key"))
+            days = project["publishing"].get("feed_validity_days")
+            if type(days) is not int or not 1 <= days <= 365:
+                raise OdrLibError("Feed validity must be 1 to 365 days.")
+            if not library["update"].get("feed_url") or not project["publishing"].get("package_url"):
+                raise OdrLibError("Signed updates need both a feed URL and a package URL.")
+        except OdrLibError as exc:
+            issues.append(ValidationIssue("error", "Publishing", str(exc)))
+    feed_url = library["update"].get("feed_url")
+    if feed_url and not _update_url(feed_url, signed=signed_updates):
+        issues.append(ValidationIssue("error", "Publishing", "Use HTTPS, or select U1.1 signed updates to use HTTP."))
+    for label, url in (("license URL", library["license"].get("url")),):
         if url and not _https_url(url):
             issues.append(ValidationIssue("error", "Library", f"The {label} must use a valid HTTPS URL."))
     for link in library["links"]:
@@ -742,8 +768,8 @@ def validate_project(project, project_path=None):
         if missing:
             issues.append(ValidationIssue("error", location, "The folder references files that no longer exist."))
     package_url = project["publishing"].get("package_url")
-    if package_url and not _https_url(package_url):
-        issues.append(ValidationIssue("error", "Publishing", "The package download URL must use HTTPS."))
+    if package_url and not _update_url(package_url, signed=signed_updates):
+        issues.append(ValidationIssue("error", "Publishing", "The package URL must use HTTPS (HTTP requires U1.1)."))
     if library["update"].get("feed_url") and not package_url:
         issues.append(ValidationIssue("warning", "Publishing", "An update feed is declared, but no package download URL is set for feed generation."))
     torrent_sources = [
@@ -779,12 +805,10 @@ def validate_project(project, project_path=None):
                 "A private torrent needs at least one tracker because DHT peer discovery is disabled.",
             ))
     if project["publishing"].get("torrent_updates"):
-        if not _https_url((project["library"].get("update") or {}).get("feed_url")):
-            issues.append(ValidationIssue("error", "Publishing", "Torrent updates need an HTTPS update feed URL."))
-        if not _https_url(project["publishing"].get("package_url")):
-            issues.append(ValidationIssue("error", "Publishing", "Torrent updates need an HTTPS package fallback URL."))
-        if not _https_url(project["publishing"].get("update_torrent_url")):
-            issues.append(ValidationIssue("error", "Publishing", "Enter the HTTPS address where the update .torrent will be published."))
+        for field, url in (("feed", feed_url), ("package fallback", package_url),
+                           ("update torrent", project["publishing"].get("update_torrent_url"))):
+            if not _update_url(url, signed=signed_updates):
+                issues.append(ValidationIssue("error", "Publishing", f"Enter a valid {field} URL: HTTPS, or HTTP with U1.1."))
         if torrent.get("private") and not torrent.get("trackers") and not torrent_sources:
             issues.append(ValidationIssue("error", "Publishing", "Private torrent updates need at least one tracker."))
     if not project["items"]:
@@ -1057,10 +1081,12 @@ def build_library(project, destination, *, project_path=None):
             if (library.get("update") or {}).get("feed_url"):
                 # Kept as a hint for packages read by the earliest Alpha 2 build;
                 # U1 is the authoritative declaration for current readers.
-                optional_capabilities.append("update-feed-v1")
-                extensions["optional"].append({
+                signed_updates = library["update"].get("protocol") == "U1.1"
+                if not signed_updates:
+                    optional_capabilities.append("update-feed-v1")
+                extensions["required" if signed_updates else "optional"].append({
                     "id": UPDATE_EXTENSION_ID,
-                    "version": UPDATE_EXTENSION_VERSION,
+                    "version": "1.1" if signed_updates else UPDATE_EXTENSION_VERSION,
                 })
             if torrent_records or project["publishing"].get("torrent_updates"):
                 torrent_required = any(
@@ -1113,7 +1139,8 @@ def build_library(project, destination, *, project_path=None):
     if project["publishing"].get("torrent_updates"):
         from core.torrent_updates import build_update_torrent
         update_torrent_path, update_torrent = build_update_torrent(
-            destination, project["publishing"]["update_torrent_url"], project["torrent"]
+            destination, project["publishing"]["update_torrent_url"], project["torrent"],
+            allow_http=project["library"]["update"].get("protocol") == "U1.1",
         )
     feed_path = None
     package_url = project["publishing"].get("package_url")
@@ -1122,7 +1149,7 @@ def build_library(project, destination, *, project_path=None):
         write_update_feed(
             package, destination, feed_path, package_url,
             project["publishing"].get("release_notes", ""), package_sha=package_sha,
-            torrent=update_torrent,
+            torrent=update_torrent, validity_days=project["publishing"]["feed_validity_days"],
         )
     torrent_path = None
     if torrent_data is not None:
@@ -1487,11 +1514,20 @@ def inspect_library(path, *, verify_hashes=True):
                 raise OdrLibError("The library artwork is too large or uses an unsupported image type.")
         update = library.get("update") if isinstance(library.get("update"), dict) else {}
         feed_url = update.get("feed_url") or None
-        if feed_url and not _https_url(feed_url):
-            raise OdrLibError("The library update feed does not use a valid HTTPS URL.")
+        signed_updates = update.get("protocol", "U1") == "U1.1"
+        declared_signed = any(e.id == "U" and e.version == "1.1" and e.required for e in extensions)
+        if any(e.id == "U" and e.version == "1.1" and not e.required for e in extensions):
+            raise OdrLibError("U1.1 must be a required extension; it cannot be treated as unsigned U1.")
+        if signed_updates != declared_signed:
+            raise OdrLibError("Signed updates must declare required extension U1.1 and its protocol.")
+        if signed_updates:
+            from core.update_security import validate_key
+            validate_key(update.get("signing_key"))
+        if feed_url and not _update_url(feed_url, signed=signed_updates):
+            raise OdrLibError("The library update feed URL is unsafe; HTTP requires U1.1.")
         declared_u1 = any(
             extension.id == UPDATE_EXTENSION_ID
-            and extension.version == UPDATE_EXTENSION_VERSION
+            and extension.version in (UPDATE_EXTENSION_VERSION, "1.1")
             for extension in extensions
         )
         declared_update_extensions = [
@@ -1541,10 +1577,12 @@ def inspect_library(path, *, verify_hashes=True):
         )
 
 
-def write_update_feed(package, package_path, destination, package_url, release_notes="", *, package_sha=None, torrent=None):
+def write_update_feed(package, package_path, destination, package_url, release_notes="", *, package_sha=None, torrent=None, validity_days=30):
     if not isinstance(package, LibraryPackageInfo):
         package = inspect_library(package_path)
-    package_url = _https_url(package_url)
+    update = package.library.get("update") or {}
+    signed_updates = update.get("protocol") == "U1.1"
+    package_url = _update_url(package_url, signed=signed_updates)
     if not package_url:
         raise OdrLibError("The package download URL must use HTTPS.")
     package_path = os.path.abspath(package_path)
@@ -1566,12 +1604,47 @@ def write_update_feed(package, package_path, destination, package_url, release_n
     }
     if torrent is not None:
         feed["latest"]["torrent"] = torrent
+    if signed_updates:
+        from core.update_security import sign_feed
+        feed = sign_feed(feed, update.get("signing_key"), validity_days=validity_days)
     inspect_update_feed(feed)
     save_json(os.path.abspath(destination), feed, backup=False)
     return feed
 
 
-def inspect_update_feed(value):
+def refresh_update_feed(project, package_path):
+    """Refresh expiry without changing published package bytes or its revision."""
+    project = normalize_project(project)
+    package = inspect_library(package_path, verify_hashes=True)
+    update = package.library.get("update") or {}
+    current = project["library"]["update"]
+    if (update.get("protocol") != "U1.1" or current.get("protocol") != "U1.1"
+            or package.library_id != project["library"]["id"]
+            or update.get("signing_key") != current.get("signing_key")):
+        raise OdrLibError("Select a U1.1 package belonging to this project and signing identity.")
+    if update.get("feed_url") != current.get("feed_url") or update.get("channel") != current.get("channel"):
+        raise OdrLibError("The project's feed URL and channel must match the published package being refreshed.")
+    publishing = project["publishing"]
+    from core.update_security import load_signing_key
+    load_signing_key(update.get("signing_key"))
+    if not _update_url(publishing.get("package_url"), signed=True):
+        raise OdrLibError("Enter a valid HTTP or HTTPS package URL before refreshing the feed.")
+    torrent_path, torrent = None, None
+    if any(e.badge == "T2" for e in package.extensions):
+        from core.torrent_updates import build_update_torrent
+        if not _update_url(publishing.get("update_torrent_url"), signed=True):
+            raise OdrLibError("Enter the update torrent URL before refreshing this T2 feed.")
+        torrent_path, torrent = build_update_torrent(package_path, publishing["update_torrent_url"], project["torrent"], allow_http=True)
+    feed_path = os.path.splitext(os.path.abspath(package_path))[0] + ".odrlib-feed.json"
+    digest = _sha256_file(package_path)
+    write_update_feed(package, package_path, feed_path, publishing["package_url"],
+                      publishing["release_notes"], package_sha=digest, torrent=torrent,
+                      validity_days=publishing["feed_validity_days"])
+    return BuildResult(os.path.abspath(package_path), os.path.getsize(package_path), digest, package, (),
+                       feed_path=feed_path, update_torrent_path=torrent_path)
+
+
+def inspect_update_feed(value, *, trusted_key=None):
     """Validate an update-feed document or local JSON file without networking."""
     if isinstance(value, (str, os.PathLike)):
         path = os.path.abspath(os.fspath(value))
@@ -1580,10 +1653,19 @@ def inspect_update_feed(value):
                 raise OdrLibError("The update feed is larger than the supported limit.")
         except OSError as exc:
             raise OdrLibError("The update feed could not be read.") from exc
-        value = load_json(path, None)
+        from core.update_security import strict_json
+        with open(path, "rb") as source:
+            value = strict_json(source.read(MAX_MANIFEST_BYTES + 1))
     if not isinstance(value, dict) or value.get("format") != FEED_FORMAT_ID:
         raise OdrLibError("The document is not an ODeR Library update feed.")
-    if value.get("format_version") != FEED_FORMAT_VERSION:
+    envelope = None
+    if value.get("format_version") == "1.1":
+        from core.update_security import verify_feed
+        envelope = deepcopy(value)
+        value = verify_feed(envelope, trusted_key=trusted_key)
+    elif trusted_key is not None:
+        raise OdrLibError("Unsigned updates cannot replace a trusted U1.1 library.")
+    if value.get("format_version") not in (FEED_FORMAT_VERSION, "1.1"):
         raise OdrLibError("This update-feed format version is not supported.")
     library_id = _valid_uuid(value.get("library_id"))
     if not library_id:
@@ -1591,19 +1673,21 @@ def inspect_update_feed(value):
     latest = value.get("latest")
     if not isinstance(latest, dict):
         raise OdrLibError("The update feed does not contain a latest release.")
+    if envelope and any(type(latest.get(field)) is not int for field in ("revision", "size")):
+        raise OdrLibError("Signed revision and size must be integers.")
     try:
         revision = int(latest.get("revision"))
         size = int(latest.get("size"))
     except (TypeError, ValueError) as exc:
         raise OdrLibError("The update feed contains an invalid revision or package size.") from exc
     sha256 = str(latest.get("sha256") or "").casefold()
-    url = _https_url(latest.get("url"))
+    url = _update_url(latest.get("url"), signed=bool(envelope))
     if revision < 1 or size < 1 or size > MAX_TOTAL_BYTES or not _SHA256_RE.fullmatch(sha256) or not url:
         raise OdrLibError("The update feed contains unsafe or incomplete package metadata.")
     torrent = latest.get("torrent")
     if torrent is not None:
         from core.torrent_updates import validate_descriptor
-        torrent = validate_descriptor(torrent)
+        torrent = validate_descriptor(torrent, allow_http=bool(envelope))
     return UpdateFeedInfo(
         library_id=library_id,
         channel=_clean_text(value.get("channel"), 50) or "stable",
@@ -1616,6 +1700,8 @@ def inspect_update_feed(value):
         minimum_reader=_clean_text(latest.get("minimum_reader"), 100),
         release_notes=_clean_text(latest.get("release_notes"), 20_000),
         torrent=torrent,
+        signing_key=value.get("signing_key") if envelope else None,
+        signed_envelope=envelope,
     )
 
 

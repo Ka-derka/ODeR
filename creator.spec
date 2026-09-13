@@ -2,6 +2,7 @@
 # Produces the private executable payload used by the Creator installer.
 
 from core.version import CREATOR_VERSION, windows_version_tuple
+from PyInstaller.utils.hooks import copy_metadata
 from PyInstaller.utils.win32.versioninfo import (
     FixedFileInfo, StringFileInfo, StringStruct, StringTable, VSVersionInfo,
     VarFileInfo, VarStruct,
@@ -32,7 +33,7 @@ a = Analysis(
     ["creator_main.py"],
     pathex=[],
     binaries=[],
-    datas=[("icon.png", ".")],
+    datas=[("icon.png", ".")] + copy_metadata("cryptography", recursive=True),
     hiddenimports=['libtorrent'],
     hookspath=[],
     hooksconfig={},

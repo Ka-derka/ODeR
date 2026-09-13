@@ -17,7 +17,20 @@ The display name is the ID followed by its version: `U1`, `T1`, and so on. ODeR 
 
 An extension belongs in `required` when ignoring it would make the library incomplete, misleading, or unsafe. It belongs in `optional` only when the core catalog remains useful without it. Readers reject unsupported required extensions before import. They may preserve and ignore unsupported optional extensions.
 
-An ID can appear only once. Versions are positive integers and are scoped to the ID; U1 and T1 evolve independently. A breaking change to the ZIP/container or catalog foundation increments the core `format_version` instead.
+An ID can appear only once. Versions are positive integers, with the explicitly supported string `"1.1"` for U1.1 (never a JSON float), and are scoped to the ID; U1 and T1 evolve independently. A breaking change to the ZIP/container or catalog foundation increments the core `format_version` instead.
+
+## U1.1 — signed HTTP/HTTPS updates
+
+Status: implemented for testing. Requires `{"id":"U","version":"1.1"}` in
+`extensions.required`, `library.update.protocol = "U1.1"`, and an Ed25519 public
+signing identity in `library.update.signing_key`. Legacy readers reject this
+required extension rather than silently treating its feeds as unsigned U1.
+
+HTTP is allowed for signed feeds, packages and T2 metainfo; it is not encrypted.
+Importing does not establish trust. The reader explicitly pins the publisher key
+before networking, checks feed signatures/expiry, and retains revision and issue-time
+high-water marks. Unexpected keys and unsigned downgrades are rejected.
+See [U1.1 setup, wire format and test checklist](U11_SIGNED_UPDATES.md).
 
 ## U1 — verified online updates
 

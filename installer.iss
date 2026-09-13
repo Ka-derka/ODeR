@@ -5,6 +5,9 @@
 #define MyAppVersion "1.1.0-beta.1"
 #define MyBuildExeName "ODeR.exe"
 #define MyAppExeName "ODeR.exe"
+#ifndef AppBuildDir
+  #define AppBuildDir "dist"
+#endif
 
 [Setup]
 AppId={{D8C0F60B-AB9E-4D91-90AA-0BD000000001}
@@ -29,7 +32,7 @@ CloseApplications=yes
 RestartApplications=no
 
 [Files]
-Source: "dist\{#MyBuildExeName}"; DestDir: "{app}"; DestName: "{#MyAppExeName}"; Flags: ignoreversion
+Source: "{#AppBuildDir}\{#MyBuildExeName}"; DestDir: "{app}"; DestName: "{#MyAppExeName}"; Flags: ignoreversion
 Source: "LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 Source: "THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 

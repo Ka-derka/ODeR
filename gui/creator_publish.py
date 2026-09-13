@@ -60,6 +60,14 @@ def sharing_instructions(result: BuildResult, *, source_folder: str = "") -> str
             "Readers can use Check for updates in ODeR to discover the new release.",
         ])
     lines.extend(["", f"Output folder: {os.path.dirname(os.path.abspath(result.path))}"])
+    update = result.package.library.get("update") or {}
+    if update.get("protocol") == "U1.1":
+        lines.extend(["", "Signed updates (U1.1)",
+                      "Share this publisher fingerprint through a separate trusted channel:",
+                      update["signing_key"]["key_id"],
+                      "Keep your private signing key backed up privately; never publish it.",
+                      "Refresh the signed feed before it expires. Increase the revision whenever package bytes change.",
+                      "HTTP is supported for signed update delivery, but it does not encrypt traffic."])
     return "\n".join(lines)
 
 
